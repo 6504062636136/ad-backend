@@ -1,20 +1,102 @@
 import express from "express";
 import cors from "cors";
 import pkg from "@prisma/client";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 
 const { PrismaClient } = pkg;
-
-const app = express();
 const prisma = new PrismaClient();
+const app = express();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// --------------------
+// สร้างโฟลเดอร์เก็บไฟล์
+// --------------------
+const photoUploadDir = path.join(__dirname, "uploads", "teachers", "photos");
+const documentUploadDir = path.join(__dirname, "uploads", "teachers", "documents");
+
+fs.mkdirSync(photoUploadDir, { recursive: true });
+fs.mkdirSync(documentUploadDir, { recursive: true });
+
+// --------------------
+// ตั้งค่า multer
+// --------------------
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (file.fieldname === "photo") {
+      cb(null, photoUploadDir);
+    } else {
+      cb(null, documentUploadDir);
+    }
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const safeName = file.originalname
+      .replace(ext, "")
+      .replace(/[^a-zA-Z0-9-_]/g, "_");
+
+    cb(null, `${Date.now()}-${safeName}${ext}`);
+  },
+});
+
+const fileFilter = (req, file, cb) => {
+  const imageTypes = ["image/png", "image/jpeg", "image/jpg"];
+  const pdfTypes = ["application/pdf"];
+
+  if (file.fieldname === "photo") {
+    if (imageTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Photo must be PNG, JPG, or JPEG"));
+    }
+    return;
+  }
+
+  if (
+    file.fieldname === "degreeCertificate" ||
+    file.fieldname === "teachingLicense" ||
+    file.fieldname === "transcript"
+  ) {
+    if (pdfTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Document must be PDF"));
+    }
+    return;
+  }
+
+  cb(new Error("Unexpected file field"));
+};
+
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10 MB
+  },
+});
 
 app.use(cors());
 app.use(express.json());
+
+// เปิดไฟล์ใน uploads ผ่าน URL
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.get("/", (req, res) => {
   res.send("API running");
 });
 
-// 1) list users
+app.get("/api/test-server", (req, res) => {
+  res.json({ message: "backend updated OK" });
+});
+
+// --------------------
+// GET users
+// --------------------
 app.get("/api/admin/users", async (req, res) => {
   try {
     const { role, search = "" } = req.query;
@@ -49,7 +131,9 @@ app.get("/api/admin/users", async (req, res) => {
   }
 });
 
-// 2) stats ต้องอยู่ก่อน :id
+// --------------------
+// GET stats
+// --------------------
 app.get("/api/admin/users/stats", async (req, res) => {
   try {
     const { role } = req.query;
@@ -93,7 +177,9 @@ app.get("/api/admin/users/stats", async (req, res) => {
   }
 });
 
-// 3) get by id
+// --------------------
+// GET user by id
+// --------------------
 app.get("/api/admin/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -108,40 +194,28 @@ app.get("/api/admin/users/:id", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-app.get("/api/test-server", (req, res) => {
-  res.json({ message: "backend updated OK" });
-});
-// 4) create
-app.post("/api/admin/users", async (req, res) => {
-  try {
-    const {
-      firstName,
-      lastName,
-      name,
-      email,
-      password,
-      phone,
-      address,
-      dateOfBirth,
-      placeOfBirth,
-      subject,
-      degree,
-      university,
-      city,
-      startEndDate,
-      degreeCertificateUrl,
-      teachingLicenseUrl,
-      transcriptUrl,
-      photoUrl,
-      role,
-      status,
-    } = req.body;
 
-    const user = await prisma.user.create({
-      data: {
+// --------------------
+// CREATE user พร้อมรับไฟล์
+// --------------------
+app.post(
+  "/api/admin/users",
+  upload.fields([
+    { name: "photo", maxCount: 1 },
+    { name: "degreeCertificate", maxCount: 1 },
+    { name: "teachingLicense", maxCount: 1 },
+    { name: "transcript", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      console.log("BODY EMAIL =", req.body.email);
+      console.log("BODY FULL =", req.body);
+      console.log("FILES =", req.files);
+
+      const {
         firstName,
         lastName,
-        name: name || `${firstName || ""} ${lastName || ""}`.trim(),
+        name,
         email,
         password,
         phone,
@@ -153,23 +227,76 @@ app.post("/api/admin/users", async (req, res) => {
         university,
         city,
         startEndDate,
-        degreeCertificateUrl,
-        teachingLicenseUrl,
-        transcriptUrl,
-        photoUrl,
         role,
         status,
-      },
-    });
+      } = req.body;
 
-    res.json(user);
-  } catch (error) {
-    console.error("POST /api/admin/users error:", error);
-    res.status(500).json({ error: error.message });
+      const photoFile = req.files?.photo?.[0];
+      const degreeCertificateFile = req.files?.degreeCertificate?.[0];
+      const teachingLicenseFile = req.files?.teachingLicense?.[0];
+      const transcriptFile = req.files?.transcript?.[0];
+
+      const existingUser = await prisma.user.findFirst({
+        where: { email },
+      });
+
+      if (existingUser) {
+        return res.status(400).json({
+          error: `อีเมลนี้มีอยู่แล้วในระบบ: ${email}`,
+        });
+      }
+
+      const user = await prisma.user.create({
+        data: {
+          firstName,
+          lastName,
+          name: name || `${firstName || ""} ${lastName || ""}`.trim(),
+          email,
+          password,
+          phone,
+          address,
+          dateOfBirth,
+          placeOfBirth,
+          subject,
+          degree,
+          university,
+          city,
+          startEndDate,
+          role,
+          status,
+          photoUrl: photoFile
+            ? `/uploads/teachers/photos/${photoFile.filename}`
+            : null,
+          degreeCertificateUrl: degreeCertificateFile
+            ? `/uploads/teachers/documents/${degreeCertificateFile.filename}`
+            : null,
+          teachingLicenseUrl: teachingLicenseFile
+            ? `/uploads/teachers/documents/${teachingLicenseFile.filename}`
+            : null,
+          transcriptUrl: transcriptFile
+            ? `/uploads/teachers/documents/${transcriptFile.filename}`
+            : null,
+        },
+      });
+
+      res.json(user);
+    } catch (error) {
+      console.error("POST /api/admin/users error:", error);
+
+      if (error.code === "P2002") {
+        return res.status(400).json({
+          error: "อีเมลนี้มีอยู่ในระบบแล้ว กรุณาใช้อีเมลอื่น",
+        });
+      }
+
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
-// 5) update
+// --------------------
+// UPDATE user
+// --------------------
 app.put("/api/admin/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -230,7 +357,9 @@ app.put("/api/admin/users/:id", async (req, res) => {
   }
 });
 
-// 6) delete
+// --------------------
+// DELETE user
+// --------------------
 app.delete("/api/admin/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -244,6 +373,21 @@ app.delete("/api/admin/users/:id", async (req, res) => {
     console.error("DELETE /api/admin/users/:id error:", error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// --------------------
+// handle multer error
+// --------------------
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  if (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  next();
 });
 
 app.listen(4000, () => {
