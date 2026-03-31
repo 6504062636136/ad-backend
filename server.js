@@ -6,6 +6,8 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
+import adminCourseRoutes from "./routes/adminCourseRoutes.js";
+
 const { PrismaClient } = pkg;
 const prisma = new PrismaClient();
 
@@ -66,6 +68,7 @@ ensureDir(path.join(__dirname, "uploads", "teachers", "photos"));
 ensureDir(path.join(__dirname, "uploads", "teachers", "documents"));
 ensureDir(path.join(__dirname, "uploads", "students", "photos"));
 ensureDir(path.join(__dirname, "uploads", "students", "documents"));
+ensureDir(path.join(__dirname, "uploads", "courses"));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -138,6 +141,7 @@ const upload = multer({
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.get("/", (req, res) => {
@@ -171,13 +175,9 @@ app.get("/api/admin/users", async (req, res) => {
       ];
     }
 
-    console.log("GET USERS where =", where);
-
     const users = await prisma.user.findMany({
       where,
     });
-
-    console.log("GET USERS result =", users);
 
     res.json(users);
   } catch (error) {
@@ -527,6 +527,8 @@ app.put(
     }
   }
 );
+
+app.use("/api/admin/courses", adminCourseRoutes);
 
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {

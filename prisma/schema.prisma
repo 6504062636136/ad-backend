@@ -8,35 +8,82 @@ datasource db {
 }
 
 model User {
-  id          String    @id @default(auto()) @map("_id") @db.ObjectId
-  firstName              String?
-lastName               String?
-name                   String?
-email                  String   @unique
-password               String?
-phone                  String?
-address                String?
-dateOfBirth            String?
-placeOfBirth           String?
-role                   String?
-status                 String?
-subject                String?
-degree                 String?
-university             String?
-city                   String?
-startEndDate           String?
-schoolName             String?
-gradeLevel             String?
-program                String?
-parentName             String?
-parentPhone            String?
-photoUrl               String?
-degreeCertificateUrl   String?
-teachingLicenseUrl     String?
-transcriptUrl          String?
-studentCardUrl         String?
-createdAt              DateTime @default(now())
-updatedAt              DateTime @updatedAt
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  firstName            String?
+  lastName             String?
+  name                 String?
+  email                String    @unique
+  password             String?
+  phone                String?
+  address              String?
+  dateOfBirth          String?
+  placeOfBirth         String?
+  role                 String?
+  status               String?
+  subject              String?
+  degree               String?
+  university           String?
+  city                 String?
+  startEndDate         String?
+  schoolName           String?
+  gradeLevel           String?
+  program              String?
+  parentName           String?
+  parentPhone          String?
+  photoUrl             String?
+  degreeCertificateUrl String?
+  teachingLicenseUrl   String?
+  transcriptUrl        String?
+  studentCardUrl       String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   @@map("users")
+}
+
+model Course {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  title            String?
+  shortDescription String?
+  description      String?
+  category         String?
+  instructorId     String?  @db.ObjectId
+  thumbnailUrl     String?
+  imageUrl         String?
+  instructor       String?
+  price            Float?   @default(0)
+  discountPrice    Float?   @default(0)
+  isFree           Boolean? @default(false)
+  isHotCourse      Boolean?
+  status           String?
+  visibility       String?
+  level            String?
+  durationText     String?
+  durationHours    Float?
+  time             String?
+  maxStudents      Int?     @default(0)
+  requirements     String[]
+  objectives       String[]
+  allowEnrollment  Boolean? @default(true)
+  hasCertificate   Boolean? @default(false)
+  featured         Boolean? @default(false)
+  curriculum       Json?
+  createdAt        DateTime?
+  updatedAt        DateTime?
+
+  @@map("courses")
+}
+
+model UserCourse {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String   @db.ObjectId
+  courseId   String   @db.ObjectId
+  progress   Int      @default(0)
+  score      Int      @default(0)
+  completed  Boolean  @default(false)
+  lastAccess DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("usercourses")
 }
