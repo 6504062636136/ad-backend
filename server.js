@@ -8,30 +8,71 @@ import { fileURLToPath } from "url";
 
 const { PrismaClient } = pkg;
 const prisma = new PrismaClient();
+
 const app = express();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --------------------
-// สร้างโฟลเดอร์เก็บไฟล์
-// --------------------
-const photoUploadDir = path.join(__dirname, "uploads", "teachers", "photos");
-const documentUploadDir = path.join(__dirname, "uploads", "teachers", "documents");
+const ensureDir = (dirPath) => {
+  fs.mkdirSync(dirPath, { recursive: true });
+};
 
-fs.mkdirSync(photoUploadDir, { recursive: true });
-fs.mkdirSync(documentUploadDir, { recursive: true });
+const safeDeleteFile = (fileUrl) => {
+  if (!fileUrl) return;
+  if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) return;
 
-// --------------------
-// ตั้งค่า multer
-// --------------------
+  const normalized = fileUrl.startsWith("/") ? fileUrl.slice(1) : fileUrl;
+  const filePath = path.join(__dirname, normalized);
+
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+};
+
+const getUploadFolder = (role, fieldname) => {
+  if (role === "student") {
+    if (fieldname === "photo") {
+      return path.join(__dirname, "uploads", "students", "photos");
+    }
+    return path.join(__dirname, "uploads", "students", "documents");
+  }
+
+  if (fieldname === "photo") {
+    return path.join(__dirname, "uploads", "teachers", "photos");
+  }
+
+  return path.join(__dirname, "uploads", "teachers", "documents");
+};
+
+const getFileUrlByRole = (role, fieldname, filename) => {
+  if (!filename) return null;
+
+  if (role === "student") {
+    if (fieldname === "photo") {
+      return `/uploads/students/photos/${filename}`;
+    }
+    return `/uploads/students/documents/${filename}`;
+  }
+
+  if (fieldname === "photo") {
+    return `/uploads/teachers/photos/${filename}`;
+  }
+
+  return `/uploads/teachers/documents/${filename}`;
+};
+
+ensureDir(path.join(__dirname, "uploads", "teachers", "photos"));
+ensureDir(path.join(__dirname, "uploads", "teachers", "documents"));
+ensureDir(path.join(__dirname, "uploads", "students", "photos"));
+ensureDir(path.join(__dirname, "uploads", "students", "documents"));
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    if (file.fieldname === "photo") {
-      cb(null, photoUploadDir);
-    } else {
-      cb(null, documentUploadDir);
-    }
+    const role = req.body.role || "teacher";
+    const folder = getUploadFolder(role, file.fieldname);
+    ensureDir(folder);
+    cb(null, folder);
   },
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
@@ -46,6 +87,12 @@ const storage = multer.diskStorage({
 const fileFilter = (req, file, cb) => {
   const imageTypes = ["image/png", "image/jpeg", "image/jpg"];
   const pdfTypes = ["application/pdf"];
+  const pdfOrImageTypes = [
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+  ];
 
   if (file.fieldname === "photo") {
     if (imageTypes.includes(file.mimetype)) {
@@ -69,6 +116,15 @@ const fileFilter = (req, file, cb) => {
     return;
   }
 
+  if (file.fieldname === "studentCard") {
+    if (pdfOrImageTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Student card must be PDF, PNG, JPG, or JPEG"));
+    }
+    return;
+  }
+
   cb(new Error("Unexpected file field"));
 };
 
@@ -76,14 +132,12 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB
+    fileSize: 10 * 1024 * 1024,
   },
 });
 
 app.use(cors());
 app.use(express.json());
-
-// เปิดไฟล์ใน uploads ผ่าน URL
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.get("/", (req, res) => {
@@ -94,17 +148,14 @@ app.get("/api/test-server", (req, res) => {
   res.json({ message: "backend updated OK" });
 });
 
-// --------------------
-// GET users
-// --------------------
 app.get("/api/admin/users", async (req, res) => {
   try {
     const { role, search = "" } = req.query;
 
     const where = {};
 
-    if (role) {
-      where.role = role;
+    if (role && role.trim() !== "") {
+      where.role = role.trim().toLowerCase();
     }
 
     if (search && search.trim() !== "") {
@@ -114,55 +165,44 @@ app.get("/api/admin/users", async (req, res) => {
         { name: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
         { subject: { contains: search, mode: "insensitive" } },
+        { schoolName: { contains: search, mode: "insensitive" } },
+        { gradeLevel: { contains: search, mode: "insensitive" } },
+        { parentName: { contains: search, mode: "insensitive" } },
       ];
     }
 
+    console.log("GET USERS where =", where);
+
     const users = await prisma.user.findMany({
       where,
-      orderBy: {
-        createdAt: "desc",
-      },
     });
+
+    console.log("GET USERS result =", users);
 
     res.json(users);
   } catch (error) {
-    console.error("GET /api/admin/users error:", error);
+    console.error("GET /api/admin/users error full =", error);
+    console.error("GET /api/admin/users error message =", error?.message);
+    console.error("GET /api/admin/users error code =", error?.code);
     res.status(500).json({ error: error.message });
   }
 });
 
-// --------------------
-// GET stats
-// --------------------
 app.get("/api/admin/users/stats", async (req, res) => {
   try {
     const { role } = req.query;
 
     const baseWhere = role ? { role } : {};
 
-    const total = await prisma.user.count({
-      where: baseWhere,
-    });
-
+    const total = await prisma.user.count({ where: baseWhere });
     const active = await prisma.user.count({
-      where: {
-        ...baseWhere,
-        status: "Active",
-      },
+      where: { ...baseWhere, status: "Active" },
     });
-
     const pending = await prisma.user.count({
-      where: {
-        ...baseWhere,
-        status: "Pending",
-      },
+      where: { ...baseWhere, status: "Pending" },
     });
-
     const inactive = await prisma.user.count({
-      where: {
-        ...baseWhere,
-        status: "Inactive",
-      },
+      where: { ...baseWhere, status: "Inactive" },
     });
 
     res.json({
@@ -177,9 +217,6 @@ app.get("/api/admin/users/stats", async (req, res) => {
   }
 });
 
-// --------------------
-// GET user by id
-// --------------------
 app.get("/api/admin/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -195,9 +232,6 @@ app.get("/api/admin/users/:id", async (req, res) => {
   }
 });
 
-// --------------------
-// CREATE user พร้อมรับไฟล์
-// --------------------
 app.post(
   "/api/admin/users",
   upload.fields([
@@ -205,13 +239,10 @@ app.post(
     { name: "degreeCertificate", maxCount: 1 },
     { name: "teachingLicense", maxCount: 1 },
     { name: "transcript", maxCount: 1 },
+    { name: "studentCard", maxCount: 1 },
   ]),
   async (req, res) => {
     try {
-      console.log("BODY EMAIL =", req.body.email);
-      console.log("BODY FULL =", req.body);
-      console.log("FILES =", req.files);
-
       const {
         firstName,
         lastName,
@@ -227,14 +258,22 @@ app.post(
         university,
         city,
         startEndDate,
+        schoolName,
+        gradeLevel,
+        program,
+        parentName,
+        parentPhone,
         role,
         status,
       } = req.body;
+
+      const normalizedRole = (role || "teacher").trim().toLowerCase();
 
       const photoFile = req.files?.photo?.[0];
       const degreeCertificateFile = req.files?.degreeCertificate?.[0];
       const teachingLicenseFile = req.files?.teachingLicense?.[0];
       const transcriptFile = req.files?.transcript?.[0];
+      const studentCardFile = req.files?.studentCard?.[0];
 
       const existingUser = await prisma.user.findFirst({
         where: { email },
@@ -257,24 +296,43 @@ app.post(
           address,
           dateOfBirth,
           placeOfBirth,
-          subject,
-          degree,
-          university,
-          city,
-          startEndDate,
-          role,
-          status,
+          role: normalizedRole,
+          status: status || "Active",
+
+          subject: subject || null,
+          degree: degree || null,
+          university: university || null,
+          city: city || null,
+          startEndDate: startEndDate || null,
+
+          schoolName: schoolName || null,
+          gradeLevel: gradeLevel || null,
+          program: program || null,
+          parentName: parentName || null,
+          parentPhone: parentPhone || null,
+
           photoUrl: photoFile
-            ? `/uploads/teachers/photos/${photoFile.filename}`
+            ? getFileUrlByRole(normalizedRole, "photo", photoFile.filename)
             : null,
           degreeCertificateUrl: degreeCertificateFile
-            ? `/uploads/teachers/documents/${degreeCertificateFile.filename}`
+            ? getFileUrlByRole(
+                normalizedRole,
+                "degreeCertificate",
+                degreeCertificateFile.filename
+              )
             : null,
           teachingLicenseUrl: teachingLicenseFile
-            ? `/uploads/teachers/documents/${teachingLicenseFile.filename}`
+            ? getFileUrlByRole(
+                normalizedRole,
+                "teachingLicense",
+                teachingLicenseFile.filename
+              )
             : null,
           transcriptUrl: transcriptFile
-            ? `/uploads/teachers/documents/${transcriptFile.filename}`
+            ? getFileUrlByRole(normalizedRole, "transcript", transcriptFile.filename)
+            : null,
+          studentCardUrl: studentCardFile
+            ? getFileUrlByRole(normalizedRole, "studentCard", studentCardFile.filename)
             : null,
         },
       });
@@ -294,75 +352,23 @@ app.post(
   }
 );
 
-// --------------------
-// UPDATE user
-// --------------------
-app.put("/api/admin/users/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const {
-      firstName,
-      lastName,
-      name,
-      email,
-      password,
-      phone,
-      address,
-      dateOfBirth,
-      placeOfBirth,
-      subject,
-      degree,
-      university,
-      city,
-      startEndDate,
-      degreeCertificateUrl,
-      teachingLicenseUrl,
-      transcriptUrl,
-      photoUrl,
-      role,
-      status,
-    } = req.body;
-
-    const user = await prisma.user.update({
-      where: { id },
-      data: {
-        firstName,
-        lastName,
-        name: name || `${firstName || ""} ${lastName || ""}`.trim(),
-        email,
-        password,
-        phone,
-        address,
-        dateOfBirth,
-        placeOfBirth,
-        subject,
-        degree,
-        university,
-        city,
-        startEndDate,
-        degreeCertificateUrl,
-        teachingLicenseUrl,
-        transcriptUrl,
-        photoUrl,
-        role,
-        status,
-      },
-    });
-
-    res.json(user);
-  } catch (error) {
-    console.error("PUT /api/admin/users/:id error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// --------------------
-// DELETE user
-// --------------------
 app.delete("/api/admin/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
+
+    const existingUser = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!existingUser) {
+      return res.status(404).json({ error: "ไม่พบผู้ใช้ที่ต้องการลบ" });
+    }
+
+    safeDeleteFile(existingUser.photoUrl);
+    safeDeleteFile(existingUser.degreeCertificateUrl);
+    safeDeleteFile(existingUser.teachingLicenseUrl);
+    safeDeleteFile(existingUser.transcriptUrl);
+    safeDeleteFile(existingUser.studentCardUrl);
 
     await prisma.user.delete({
       where: { id },
@@ -375,9 +381,153 @@ app.delete("/api/admin/users/:id", async (req, res) => {
   }
 });
 
-// --------------------
-// handle multer error
-// --------------------
+app.put(
+  "/api/admin/users/:id",
+  upload.fields([
+    { name: "photo", maxCount: 1 },
+    { name: "degreeCertificate", maxCount: 1 },
+    { name: "teachingLicense", maxCount: 1 },
+    { name: "transcript", maxCount: 1 },
+    { name: "studentCard", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const existingUser = await prisma.user.findUnique({
+        where: { id },
+      });
+
+      if (!existingUser) {
+        return res.status(404).json({
+          error: "ไม่พบข้อมูลผู้ใช้ที่ต้องการแก้ไข",
+        });
+      }
+
+      const {
+        firstName,
+        lastName,
+        name,
+        email,
+        password,
+        phone,
+        address,
+        dateOfBirth,
+        placeOfBirth,
+        subject,
+        degree,
+        university,
+        city,
+        startEndDate,
+        schoolName,
+        gradeLevel,
+        program,
+        parentName,
+        parentPhone,
+        role,
+        status,
+      } = req.body;
+
+      const normalizedRole = (role || existingUser.role || "teacher").trim().toLowerCase();
+
+      if (email && email !== existingUser.email) {
+        const duplicateUser = await prisma.user.findFirst({
+          where: { email },
+        });
+
+        if (duplicateUser) {
+          return res.status(400).json({
+            error: `อีเมลนี้มีอยู่แล้วในระบบ: ${email}`,
+          });
+        }
+      }
+
+      const photoFile = req.files?.photo?.[0];
+      const degreeCertificateFile = req.files?.degreeCertificate?.[0];
+      const teachingLicenseFile = req.files?.teachingLicense?.[0];
+      const transcriptFile = req.files?.transcript?.[0];
+      const studentCardFile = req.files?.studentCard?.[0];
+
+      if (photoFile && existingUser.photoUrl) {
+        safeDeleteFile(existingUser.photoUrl);
+      }
+      if (degreeCertificateFile && existingUser.degreeCertificateUrl) {
+        safeDeleteFile(existingUser.degreeCertificateUrl);
+      }
+      if (teachingLicenseFile && existingUser.teachingLicenseUrl) {
+        safeDeleteFile(existingUser.teachingLicenseUrl);
+      }
+      if (transcriptFile && existingUser.transcriptUrl) {
+        safeDeleteFile(existingUser.transcriptUrl);
+      }
+      if (studentCardFile && existingUser.studentCardUrl) {
+        safeDeleteFile(existingUser.studentCardUrl);
+      }
+
+      const updatedUser = await prisma.user.update({
+        where: { id },
+        data: {
+          firstName,
+          lastName,
+          name: name || `${firstName || ""} ${lastName || ""}`.trim(),
+          email,
+          password:
+            password && password.trim() !== ""
+              ? password
+              : existingUser.password,
+          phone,
+          address,
+          dateOfBirth,
+          placeOfBirth,
+          role: normalizedRole,
+          status,
+
+          subject: subject || null,
+          degree: degree || null,
+          university: university || null,
+          city: city || null,
+          startEndDate: startEndDate || null,
+
+          schoolName: schoolName || null,
+          gradeLevel: gradeLevel || null,
+          program: program || null,
+          parentName: parentName || null,
+          parentPhone: parentPhone || null,
+
+          photoUrl: photoFile
+            ? getFileUrlByRole(normalizedRole, "photo", photoFile.filename)
+            : existingUser.photoUrl,
+          degreeCertificateUrl: degreeCertificateFile
+            ? getFileUrlByRole(
+                normalizedRole,
+                "degreeCertificate",
+                degreeCertificateFile.filename
+              )
+            : existingUser.degreeCertificateUrl,
+          teachingLicenseUrl: teachingLicenseFile
+            ? getFileUrlByRole(
+                normalizedRole,
+                "teachingLicense",
+                teachingLicenseFile.filename
+              )
+            : existingUser.teachingLicenseUrl,
+          transcriptUrl: transcriptFile
+            ? getFileUrlByRole(normalizedRole, "transcript", transcriptFile.filename)
+            : existingUser.transcriptUrl,
+          studentCardUrl: studentCardFile
+            ? getFileUrlByRole(normalizedRole, "studentCard", studentCardFile.filename)
+            : existingUser.studentCardUrl,
+        },
+      });
+
+      res.json(updatedUser);
+    } catch (error) {
+      console.error("PUT /api/admin/users/:id error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     return res.status(400).json({ error: error.message });
