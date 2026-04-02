@@ -1,4 +1,5 @@
 import express from "express";
+import mongoose from "mongoose";
 import cors from "cors";
 import pkg from "@prisma/client";
 import multer from "multer";
@@ -7,7 +8,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 
 import adminCourseRoutes from "./routes/adminCourseRoutes.js";
-
+import adminAuthRoutes from "./routes/adminAuthRoutes.js";
 const { PrismaClient } = pkg;
 const prisma = new PrismaClient();
 
@@ -142,6 +143,7 @@ const upload = multer({
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use("/api/admin", adminAuthRoutes);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.get("/", (req, res) => {
@@ -541,7 +543,15 @@ app.use((error, req, res, next) => {
 
   next();
 });
+mongoose
+  .connect(process.env.DATABASE_URL)
+  .then(() => {
+    console.log("MongoDB connected");
+    app.listen(4000, () => {
+      console.log("Server running on http://localhost:4000");
+    });
+  })
+  .catch((error) => {
+    console.error("MongoDB connection error:", error);
+  });
 
-app.listen(4000, () => {
-  console.log("Server running on http://localhost:4000");
-});
