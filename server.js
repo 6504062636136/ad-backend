@@ -6,6 +6,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import admin from "./config/firebaseAdmin.js";
 
 import adminCourseRoutes from "./routes/adminCourseRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
@@ -244,6 +245,8 @@ app.post(
     { name: "studentCard", maxCount: 1 },
   ]),
   async (req, res) => {
+    let firebaseUser = null;
+
     try {
       const {
         firstName,
@@ -269,7 +272,11 @@ app.post(
         status,
       } = req.body;
 
+      const normalizedEmail = (email || "").trim().toLowerCase();
       const normalizedRole = (role || "teacher").trim().toLowerCase();
+      const normalizedStatus = status || "Active";
+      const displayName =
+        name || `${firstName || ""} ${lastName || ""}`.trim();
 
       const photoFile = req.files?.photo?.[0];
       const degreeCertificateFile = req.files?.degreeCertificate?.[0];
@@ -277,29 +284,68 @@ app.post(
       const transcriptFile = req.files?.transcript?.[0];
       const studentCardFile = req.files?.studentCard?.[0];
 
+      if (!normalizedEmail) {
+        return res.status(400).json({
+          error: "กรุณากรอกอีเมล",
+        });
+      }
+
+      if (!password || password.trim().length < 6) {
+        return res.status(400).json({
+          error: "รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร",
+        });
+      }
+
       const existingUser = await prisma.user.findFirst({
-        where: { email },
+        where: { email: normalizedEmail },
       });
 
       if (existingUser) {
         return res.status(400).json({
-          error: `อีเมลนี้มีอยู่แล้วในระบบ: ${email}`,
+          error: `อีเมลนี้มีอยู่แล้วในระบบ: ${normalizedEmail}`,
         });
       }
 
+      try {
+        const existingFirebaseUser = await admin
+          .auth()
+          .getUserByEmail(normalizedEmail);
+
+        if (existingFirebaseUser) {
+          return res.status(400).json({
+            error: `อีเมลนี้มีอยู่แล้วใน Firebase: ${normalizedEmail}`,
+          });
+        }
+      } catch (firebaseLookupError) {
+        if (firebaseLookupError.code !== "auth/user-not-found") {
+          throw firebaseLookupError;
+        }
+      }
+
+      firebaseUser = await admin.auth().createUser({
+        email: normalizedEmail,
+        password: password.trim(),
+        displayName: displayName || normalizedEmail,
+        disabled: normalizedStatus === "Inactive",
+      });
+
       const user = await prisma.user.create({
         data: {
+          firebaseUid: firebaseUser.uid,
           firstName,
           lastName,
-          name: name || `${firstName || ""} ${lastName || ""}`.trim(),
-          email,
-          password,
+          name: displayName,
+          email: normalizedEmail,
+
+          // ใช้ Firebase Auth เป็นระบบล็อกอินหลัก
+          password: null,
+
           phone,
           address,
           dateOfBirth,
           placeOfBirth,
           role: normalizedRole,
-          status: status || "Active",
+          status: normalizedStatus,
 
           subject: subject || null,
           degree: degree || null,
@@ -331,17 +377,35 @@ app.post(
               )
             : null,
           transcriptUrl: transcriptFile
-            ? getFileUrlByRole(normalizedRole, "transcript", transcriptFile.filename)
+            ? getFileUrlByRole(
+                normalizedRole,
+                "transcript",
+                transcriptFile.filename
+              )
             : null,
           studentCardUrl: studentCardFile
-            ? getFileUrlByRole(normalizedRole, "studentCard", studentCardFile.filename)
+            ? getFileUrlByRole(
+                normalizedRole,
+                "studentCard",
+                studentCardFile.filename
+              )
             : null,
         },
       });
 
-      res.json(user);
+      return res.status(200).json(user);
     } catch (error) {
       console.error("POST /api/admin/users error:", error);
+      console.error("POST /api/admin/users message:", error?.message);
+      console.error("POST /api/admin/users code:", error?.code);
+
+      if (firebaseUser?.uid) {
+        try {
+          await admin.auth().deleteUser(firebaseUser.uid);
+        } catch (rollbackError) {
+          console.error("Firebase rollback error:", rollbackError);
+        }
+      }
 
       if (error.code === "P2002") {
         return res.status(400).json({
@@ -349,7 +413,21 @@ app.post(
         });
       }
 
-      res.status(500).json({ error: error.message });
+      if (error.code === "auth/email-already-exists") {
+        return res.status(400).json({
+          error: "อีเมลนี้มีอยู่ใน Firebase แล้ว กรุณาใช้อีเมลอื่น",
+        });
+      }
+
+      if (error.code === "auth/invalid-password") {
+        return res.status(400).json({
+          error: "รหัสผ่านไม่ถูกต้องตามเงื่อนไขของ Firebase",
+        });
+      }
+
+      return res.status(500).json({
+        error: error.message || "สร้างผู้ใช้ไม่สำเร็จ",
+      });
     }
   }
 );
