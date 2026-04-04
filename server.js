@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -10,6 +11,9 @@ import admin from "./config/firebaseAdmin.js";
 
 import adminCourseRoutes from "./routes/adminCourseRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
+import { requireAdmin } from "./middlewares/adminAuthMiddleware.js";
+
 const { PrismaClient } = pkg;
 const prisma = new PrismaClient();
 
@@ -145,6 +149,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/api/admin", adminAuthRoutes);
+app.use("/api/admin", adminRoutes);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.get("/", (req, res) => {
@@ -155,14 +160,18 @@ app.get("/api/test-server", (req, res) => {
   res.json({ message: "backend updated OK" });
 });
 
-app.get("/api/admin/users", async (req, res) => {
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
   try {
-    const { role, search = "" } = req.query;
+    const { role, search = "", status } = req.query;
 
     const where = {};
 
     if (role && role.trim() !== "") {
       where.role = role.trim().toLowerCase();
+    }
+
+    if (status && status.trim() !== "") {
+      where.status = { equals: status.trim(), mode: "insensitive" };
     }
 
     if (search && search.trim() !== "") {
@@ -182,12 +191,19 @@ app.get("/api/admin/users", async (req, res) => {
       where,
     });
 
-    res.json(users);
+    const mappedUsers = users.map(u => ({
+         ...u,
+         name: u.name || `${u.firstName || ""} ${u.lastName || ""}`.trim()
+    }));
+
+    res.json({
+      success: true,
+      message: "ดึงรายการผู้ใช้สำเร็จ",
+      data: mappedUsers
+    });
   } catch (error) {
     console.error("GET /api/admin/users error full =", error);
-    console.error("GET /api/admin/users error message =", error?.message);
-    console.error("GET /api/admin/users error code =", error?.code);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: "เกิดข้อผิดพลาด", error: error.message });
   }
 });
 
@@ -220,7 +236,7 @@ app.get("/api/admin/users/stats", async (req, res) => {
   }
 });
 
-app.get("/api/admin/users/:id", async (req, res) => {
+app.get("/api/admin/users/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -228,15 +244,16 @@ app.get("/api/admin/users/:id", async (req, res) => {
       where: { id },
     });
 
-    res.json(user);
+    res.json({ success: true, message: "ดึงผู้ใช้สำเร็จ", data: user });
   } catch (error) {
     console.error("GET /api/admin/users/:id error:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: "เกิดข้อผิดพลาด", error: error.message });
   }
 });
 
 app.post(
   "/api/admin/users",
+  requireAdmin,
   upload.fields([
     { name: "photo", maxCount: 1 },
     { name: "degreeCertificate", maxCount: 1 },
@@ -364,36 +381,36 @@ app.post(
             : null,
           degreeCertificateUrl: degreeCertificateFile
             ? getFileUrlByRole(
-                normalizedRole,
-                "degreeCertificate",
-                degreeCertificateFile.filename
-              )
+              normalizedRole,
+              "degreeCertificate",
+              degreeCertificateFile.filename
+            )
             : null,
           teachingLicenseUrl: teachingLicenseFile
             ? getFileUrlByRole(
-                normalizedRole,
-                "teachingLicense",
-                teachingLicenseFile.filename
-              )
+              normalizedRole,
+              "teachingLicense",
+              teachingLicenseFile.filename
+            )
             : null,
           transcriptUrl: transcriptFile
             ? getFileUrlByRole(
-                normalizedRole,
-                "transcript",
-                transcriptFile.filename
-              )
+              normalizedRole,
+              "transcript",
+              transcriptFile.filename
+            )
             : null,
           studentCardUrl: studentCardFile
             ? getFileUrlByRole(
-                normalizedRole,
-                "studentCard",
-                studentCardFile.filename
-              )
+              normalizedRole,
+              "studentCard",
+              studentCardFile.filename
+            )
             : null,
         },
       });
 
-      return res.status(200).json(user);
+      return res.status(200).json({ success: true, message: "สร้างผู้ใช้สำเร็จ", data: user });
     } catch (error) {
       console.error("POST /api/admin/users error:", error);
       console.error("POST /api/admin/users message:", error?.message);
@@ -409,30 +426,34 @@ app.post(
 
       if (error.code === "P2002") {
         return res.status(400).json({
-          error: "อีเมลนี้มีอยู่ในระบบแล้ว กรุณาใช้อีเมลอื่น",
+          success: false,
+          message: "อีเมลนี้มีอยู่ในระบบแล้ว กรุณาใช้อีเมลอื่น",
         });
       }
 
       if (error.code === "auth/email-already-exists") {
         return res.status(400).json({
-          error: "อีเมลนี้มีอยู่ใน Firebase แล้ว กรุณาใช้อีเมลอื่น",
+          success: false,
+          message: "อีเมลนี้มีอยู่ใน Firebase แล้ว กรุณาใช้อีเมลอื่น",
         });
       }
 
       if (error.code === "auth/invalid-password") {
         return res.status(400).json({
-          error: "รหัสผ่านไม่ถูกต้องตามเงื่อนไขของ Firebase",
+          success: false,
+          message: "รหัสผ่านไม่ถูกต้องตามเงื่อนไขของ Firebase",
         });
       }
 
       return res.status(500).json({
-        error: error.message || "สร้างผู้ใช้ไม่สำเร็จ",
+        success: false,
+        message: error.message || "สร้างผู้ใช้ไม่สำเร็จ",
       });
     }
   }
 );
 
-app.delete("/api/admin/users/:id", async (req, res) => {
+app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -454,15 +475,16 @@ app.delete("/api/admin/users/:id", async (req, res) => {
       where: { id },
     });
 
-    res.json({ message: "User deleted successfully" });
+    res.json({ success: true, message: "User deleted successfully" });
   } catch (error) {
     console.error("DELETE /api/admin/users/:id error:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: "เกิดข้อผิดพลาด", error: error.message });
   }
 });
 
 app.put(
   "/api/admin/users/:id",
+  requireAdmin,
   upload.fields([
     { name: "photo", maxCount: 1 },
     { name: "degreeCertificate", maxCount: 1 },
@@ -579,17 +601,17 @@ app.put(
             : existingUser.photoUrl,
           degreeCertificateUrl: degreeCertificateFile
             ? getFileUrlByRole(
-                normalizedRole,
-                "degreeCertificate",
-                degreeCertificateFile.filename
-              )
+              normalizedRole,
+              "degreeCertificate",
+              degreeCertificateFile.filename
+            )
             : existingUser.degreeCertificateUrl,
           teachingLicenseUrl: teachingLicenseFile
             ? getFileUrlByRole(
-                normalizedRole,
-                "teachingLicense",
-                teachingLicenseFile.filename
-              )
+              normalizedRole,
+              "teachingLicense",
+              teachingLicenseFile.filename
+            )
             : existingUser.teachingLicenseUrl,
           transcriptUrl: transcriptFile
             ? getFileUrlByRole(normalizedRole, "transcript", transcriptFile.filename)
@@ -600,10 +622,10 @@ app.put(
         },
       });
 
-      res.json(updatedUser);
+      res.json({ success: true, message: "อัปเดตผู้ใช้สำเร็จ", data: updatedUser });
     } catch (error) {
       console.error("PUT /api/admin/users/:id error:", error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ success: false, message: "เกิดข้อผิดพลาด", error: error.message });
     }
   }
 );
