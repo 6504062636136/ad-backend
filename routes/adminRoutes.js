@@ -1,12 +1,24 @@
 import express from "express";
-import { getDashboardStats, approveTeacher, rejectTeacher } from "../controllers/adminController.js";
+import {
+  getDashboardStats,
+  getPendingTeachers,
+  getAdminUsers,
+  approveTeacher,
+  rejectTeacher,
+} from "../controllers/adminController.js";
 import { requireAdmin } from "../middlewares/adminAuthMiddleware.js";
 
 const router = express.Router();
 
-router.use(requireAdmin); // Protect all routes with Admin requirement
+router.use(requireAdmin);
 
+router.get("/dashboard", getDashboardStats);
 router.get("/dashboard/summary", getDashboardStats);
+
+router.get("/users", getAdminUsers);
+router.get("/users/pending", getPendingTeachers);
+router.get("/teachers/pending", getPendingTeachers);
+
 router.patch("/users/:id/approve", approveTeacher);
 router.patch("/users/:id/reject", rejectTeacher);
 

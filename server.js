@@ -244,7 +244,19 @@ app.get("/api/admin/users/:id", requireAdmin, async (req, res) => {
       where: { id },
     });
 
-    res.json({ success: true, message: "ดึงผู้ใช้สำเร็จ", data: user });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "ไม่พบผู้ใช้ที่ต้องการแก้ไข",
+      });
+    }
+
+    const responseUser = {
+      ...user,
+      name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+    };
+
+    res.json({ success: true, message: "ดึงผู้ใช้สำเร็จ", data: responseUser });
   } catch (error) {
     console.error("GET /api/admin/users/:id error:", error);
     res.status(500).json({ success: false, message: "เกิดข้อผิดพลาด", error: error.message });

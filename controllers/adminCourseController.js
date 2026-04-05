@@ -127,6 +127,7 @@ const mapRawCourse = (course) => ({
     course?.durationText ||
     course?.time ||
     (course?.durationHours ? `${course.durationHours} hours` : ""),
+  time: course?.time || "",
   maxStudents: Number(course?.maxStudents || 0),
   allowEnrollment:
     typeof course?.allowEnrollment === "boolean"
@@ -151,7 +152,7 @@ const mapRawCourse = (course) => ({
 const validateCoursePayload = async (payload) => {
   if (!payload.title) return "กรุณากรอกชื่อคอร์ส";
   if (!payload.category) return "กรุณาเลือกหมวดหมู่";
-  if (!payload.instructorId) return "กรุณาเลือกครูผู้สอน";
+  if (!payload.instructorId) return "กรุณาเลือกครูผู้สอน";  if (payload.startDate && payload.endDate && payload.startDate > payload.endDate) return "วันหลัง end date ต้องมากกว่า start date";
 
   const teacher = await prisma.user.findUnique({
     where: { id: payload.instructorId },
@@ -217,8 +218,11 @@ export const getAdminCourses = async (req, res) => {
       const teacherMap = new Map(teachers.map((item) => [item.id, item]));
 
       result = courses.map((course) => {
-        const sessionCount = Array.isArray(course.curriculum) 
-          ? course.curriculum.reduce((acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0), 0) 
+        const sessionCount = Array.isArray(course.curriculum)
+          ? course.curriculum.reduce(
+              (acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0),
+              0
+            )
           : 0;
 
         return {
@@ -240,6 +244,7 @@ export const getAdminCourses = async (req, res) => {
             course.durationText ||
             course.time ||
             (course.durationHours ? `${course.durationHours} hours` : ""),
+          time: course.time || "",
           maxStudents: course.maxStudents || 0,
           allowEnrollment:
             typeof course.allowEnrollment === "boolean"
@@ -266,9 +271,12 @@ export const getAdminCourses = async (req, res) => {
 
       console.log("GET COURSES prisma.findRaw count =", rawCourses?.length || 0);
 
-      result = (rawCourses || []).map(mapRawCourse).map(course => {
-        const sessionCount = Array.isArray(course.curriculum) 
-          ? course.curriculum.reduce((acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0), 0) 
+      result = (rawCourses || []).map(mapRawCourse).map((course) => {
+        const sessionCount = Array.isArray(course.curriculum)
+          ? course.curriculum.reduce(
+              (acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0),
+              0
+            )
           : 0;
         return { ...course, sessionCount };
       });
@@ -286,7 +294,9 @@ export const getAdminCourses = async (req, res) => {
       }
 
       if (status && status !== "all") {
-        result = result.filter((course) => (course.status || "published").toLowerCase() === status.toLowerCase());
+        result = result.filter(
+          (course) => (course.status || "published").toLowerCase() === status.toLowerCase()
+        );
       }
 
       result.sort((a, b) => {
@@ -311,6 +321,295 @@ export const getAdminCourses = async (req, res) => {
   }
 };
 
+export const getPendingCourses = async (req, res) => {
+  try {
+    const { keyword = "" } = req.query;
+
+    const where = { status: { equals: "pending", mode: "insensitive" } };
+
+    if (keyword && keyword.trim() !== "") {
+      where.OR = [
+        { title: { contains: keyword, mode: "insensitive" } },
+        { category: { contains: keyword, mode: "insensitive" } },
+        { description: { contains: keyword, mode: "insensitive" } },
+        { shortDescription: { contains: keyword, mode: "insensitive" } },
+      ];
+    }
+
+    console.log("GET PENDING COURSES where =", where);
+
+    let courses = await prisma.course.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+    });
+
+    console.log("GET PENDING COURSES prisma.findMany count =", courses.length);
+
+    let result = [];
+
+    if (courses.length > 0) {
+      const instructorIds = [
+        ...new Set(courses.map((item) => item.instructorId).filter(Boolean)),
+      ];
+
+      const teachers = instructorIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: instructorIds } },
+          })
+        : [];
+
+      const teacherMap = new Map(teachers.map((item) => [item.id, item]));
+
+      result = courses.map((course) => {
+        const sessionCount = Array.isArray(course.curriculum)
+          ? course.curriculum.reduce(
+              (acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0),
+              0
+            )
+          : 0;
+
+        return {
+          _id: course.id,
+          id: course.id,
+          title: course.title || "Untitled Course",
+          shortDescription: course.shortDescription || "",
+          description: course.description || "",
+          category: course.category || "",
+          thumbnailUrl: course.thumbnailUrl || course.imageUrl || "",
+          imageUrl: course.imageUrl || "",
+          price: course.price || 0,
+          discountPrice: course.discountPrice || 0,
+          isFree: typeof course.isFree === "boolean" ? course.isFree : false,
+          status: course.status || "published",
+          visibility: course.visibility || "public",
+          level: course.level || "beginner",
+          durationText:
+            course.durationText ||
+            course.time ||
+            (course.durationHours ? `${course.durationHours} hours` : ""),
+          time: course.time || "",
+          maxStudents: course.maxStudents || 0,
+          allowEnrollment:
+            typeof course.allowEnrollment === "boolean"
+              ? course.allowEnrollment
+              : true,
+          hasCertificate: Boolean(course.hasCertificate),
+          featured:
+            typeof course.featured === "boolean"
+              ? course.featured
+              : Boolean(course.isHotCourse),
+          createdAt: course.createdAt,
+          updatedAt: course.updatedAt,
+          sessionCount,
+          instructorId: course.instructorId || "",
+          instructor: course.instructorId
+            ? formatInstructor(teacherMap.get(course.instructorId))
+            : formatLegacyInstructor(course.instructor || ""),
+        };
+      });
+    } else {
+      const rawCourses = await prisma.course.findRaw({
+        filter: { status: "pending" },
+      });
+
+      console.log(
+        "GET PENDING COURSES prisma.findRaw count =",
+        rawCourses?.length || 0
+      );
+
+      result = (rawCourses || []).map(mapRawCourse).map((course) => {
+        const sessionCount = Array.isArray(course.curriculum)
+          ? course.curriculum.reduce(
+              (acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0),
+              0
+            )
+          : 0;
+        return { ...course, sessionCount };
+      });
+
+      if (keyword && keyword.trim() !== "") {
+        const lower = keyword.toLowerCase();
+        result = result.filter((course) => {
+          return (
+            (course.title || "").toLowerCase().includes(lower) ||
+            (course.category || "").toLowerCase().includes(lower) ||
+            (course.description || "").toLowerCase().includes(lower) ||
+            (course.shortDescription || "").toLowerCase().includes(lower)
+          );
+        });
+      }
+
+      result.sort((a, b) => {
+        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "ดึงรายการคอร์สที่รอการอนุมัติสำเร็จ",
+      data: result,
+    });
+  } catch (error) {
+    console.error("getPendingCourses error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึงรายการคอร์สที่รอการอนุมัติ",
+      error: error.message,
+    });
+  }
+};
+
+export const createAdminCourse = async (req, res) => {
+  try {
+    const rawData = parseRequestData(req);
+    console.log("createAdminCourse rawData:", rawData);
+
+    const payload = {
+      title: String(rawData.title || "").trim(),
+      shortDescription: String(rawData.shortDescription || "").trim(),
+      description: String(rawData.description || "").trim(),
+      category: String(rawData.category || "").trim(),
+      instructorId: String(rawData.instructorId || "").trim(),
+      thumbnailUrl: getThumbnailUrl(req) || String(rawData.thumbnailUrl || "").trim(),
+      price: toNumber(rawData.price, 0),
+      discountPrice: toNumber(rawData.discountPrice, 0),
+      isFree: toBoolean(rawData.isFree, false),
+      status: String(rawData.status || "draft").trim(),
+      visibility: String(rawData.visibility || "private").trim(),
+      level: String(rawData.level || "beginner").trim(),
+      durationText: String(rawData.durationText || "").trim(),
+      startDate: String(rawData.startDate || "").trim(),
+      endDate: String(rawData.endDate || "").trim(),
+      startTime: String(rawData.startTime || "").trim(),
+      endTime: String(rawData.endTime || "").trim(),
+      maxStudents: toNumber(rawData.maxStudents, 0),
+      requirements: normalizeStringArray(rawData.requirements),
+      objectives: normalizeStringArray(rawData.objectives),
+      allowEnrollment: toBoolean(rawData.allowEnrollment, true),
+      hasCertificate: toBoolean(rawData.hasCertificate, false),
+      featured: toBoolean(rawData.featured, false),
+      curriculum: normalizeCurriculum(rawData.curriculum),
+      sessions: rawData.sessions || [],
+    };
+
+    console.log("createAdminCourse payload:", payload);
+
+    const validationError = await validateCoursePayload(payload);
+
+    if (validationError) {
+      console.log("createAdminCourse validation error:", validationError);
+      return res.status(400).json({
+        success: false,
+        message: validationError,
+      });
+    }
+
+    const created = await prisma.course.create({
+      data: payload,
+    });
+
+    console.log("createAdminCourse created:", created);
+
+    return res.status(201).json({
+      success: true,
+      message: "เพิ่มคอร์สสำเร็จ",
+      data: {
+        _id: created.id,
+        id: created.id,
+        ...created,
+      },
+    });
+  } catch (error) {
+    console.error("createAdminCourse error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการเพิ่มคอร์ส",
+      error: error.message,
+    });
+  }
+};
+
+export const updateAdminCourse = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const existing = await prisma.course.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: "ไม่พบคอร์สนี้",
+      });
+    }
+
+    const rawData = parseRequestData(req);
+
+    const payload = {
+      title: String(rawData.title || "").trim(),
+      shortDescription: String(rawData.shortDescription || "").trim(),
+      description: String(rawData.description || "").trim(),
+      category: String(rawData.category || "").trim(),
+      instructorId: String(rawData.instructorId || "").trim(),
+      thumbnailUrl: req.file?.filename
+        ? `/uploads/courses/${req.file.filename}`
+        : String(rawData.thumbnailUrl || existing.thumbnailUrl || "").trim(),
+      price: toNumber(rawData.price, 0),
+      discountPrice: toNumber(rawData.discountPrice, 0),
+      isFree: toBoolean(rawData.isFree, false),
+      status: String(rawData.status || existing.status || "draft").trim(),
+      visibility: String(rawData.visibility || existing.visibility || "private").trim(),
+      level: String(rawData.level || existing.level || "beginner").trim(),
+      durationText: String(rawData.durationText || "").trim(),
+      startDate: String(rawData.startDate || "").trim(),
+      endDate: String(rawData.endDate || "").trim(),
+      startTime: String(rawData.startTime || "").trim(),
+      endTime: String(rawData.endTime || "").trim(),
+      maxStudents: toNumber(rawData.maxStudents, 0),
+      requirements: normalizeStringArray(rawData.requirements),
+      objectives: normalizeStringArray(rawData.objectives),
+      allowEnrollment: toBoolean(rawData.allowEnrollment, true),
+      hasCertificate: toBoolean(rawData.hasCertificate, false),
+      featured: toBoolean(rawData.featured, false),
+      curriculum: normalizeCurriculum(rawData.curriculum),
+      sessions: rawData.sessions || [],
+    };
+
+    const validationError = await validateCoursePayload(payload);
+
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: validationError,
+      });
+    }
+
+    const updated = await prisma.course.update({
+      where: { id },
+      data: payload,
+    });
+
+    return res.json({
+      success: true,
+      message: "อัปเดตคอร์สสำเร็จ",
+      data: {
+        _id: updated.id,
+        id: updated.id,
+        ...updated,
+      },
+    });
+  } catch (error) {
+    console.error("updateAdminCourse error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการอัปเดตคอร์ส",
+      error: error.message,
+    });
+  }
+};
 export const getAdminCourseById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -394,6 +693,10 @@ export const getAdminCourseById = async (req, res) => {
       students = [];
     }
 
+    const sessionCount = Array.isArray(course.curriculum) 
+      ? course.curriculum.reduce((acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0), 0) 
+      : 0;
+
     return res.json({
       success: true,
       message: "ดึงรายละเอียดคอร์สสำเร็จ",
@@ -427,12 +730,14 @@ export const getAdminCourseById = async (req, res) => {
           typeof course.allowEnrollment === "boolean"
             ? course.allowEnrollment
             : true,
+        time: course.time || "",
         hasCertificate: Boolean(course.hasCertificate),
         featured:
           typeof course.featured === "boolean"
             ? course.featured
             : Boolean(course.isHotCourse),
         curriculum: Array.isArray(course.curriculum) ? course.curriculum : [],
+        sessionCount,
         students,
         createdAt: course.createdAt,
         updatedAt: course.updatedAt,
@@ -448,217 +753,54 @@ export const getAdminCourseById = async (req, res) => {
   }
 };
 
-export const createAdminCourse = async (req, res) => {
-  try {
-    const rawData = parseRequestData(req);
-
-    const payload = {
-      title: String(rawData.title || "").trim(),
-      shortDescription: String(rawData.shortDescription || "").trim(),
-      description: String(rawData.description || "").trim(),
-      category: String(rawData.category || "").trim(),
-      instructorId: String(rawData.instructorId || "").trim(),
-      thumbnailUrl: getThumbnailUrl(req) || String(rawData.thumbnailUrl || "").trim(),
-      price: toNumber(rawData.price, 0),
-      discountPrice: toNumber(rawData.discountPrice, 0),
-      isFree: toBoolean(rawData.isFree, false),
-      status: String(rawData.status || "draft").trim(),
-      visibility: String(rawData.visibility || "private").trim(),
-      level: String(rawData.level || "beginner").trim(),
-      durationText: String(rawData.durationText || "").trim(),
-      maxStudents: toNumber(rawData.maxStudents, 0),
-      requirements: normalizeStringArray(rawData.requirements),
-      objectives: normalizeStringArray(rawData.objectives),
-      allowEnrollment: toBoolean(rawData.allowEnrollment, true),
-      hasCertificate: toBoolean(rawData.hasCertificate, false),
-      featured: toBoolean(rawData.featured, false),
-      curriculum: normalizeCurriculum(rawData.curriculum),
-    };
-
-    const validationError = await validateCoursePayload(payload);
-
-    if (validationError) {
-      return res.status(400).json({
-        success: false,
-        message: validationError,
-      });
-    }
-
-    const created = await prisma.course.create({
-      data: payload,
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "เพิ่มคอร์สสำเร็จ",
-      data: {
-        _id: created.id,
-        id: created.id,
-        ...created,
-      },
-    });
-  } catch (error) {
-    console.error("createAdminCourse error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "เกิดข้อผิดพลาดในการเพิ่มคอร์ส",
-      error: error.message,
-    });
-  }
-};
-
-export const updateAdminCourse = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const existing = await prisma.course.findUnique({
-      where: { id },
-    });
-
-    if (!existing) {
-      return res.status(404).json({
-        success: false,
-        message: "ไม่พบคอร์สนี้",
-      });
-    }
-
-    const rawData = parseRequestData(req);
-
-    const payload = {
-      title: String(rawData.title || "").trim(),
-      shortDescription: String(rawData.shortDescription || "").trim(),
-      description: String(rawData.description || "").trim(),
-      category: String(rawData.category || "").trim(),
-      instructorId: String(rawData.instructorId || "").trim(),
-      thumbnailUrl: req.file?.filename
-        ? `/uploads/courses/${req.file.filename}`
-        : String(rawData.thumbnailUrl || existing.thumbnailUrl || "").trim(),
-      price: toNumber(rawData.price, 0),
-      discountPrice: toNumber(rawData.discountPrice, 0),
-      isFree: toBoolean(rawData.isFree, false),
-      status: String(rawData.status || "draft").trim(),
-      visibility: String(rawData.visibility || "private").trim(),
-      level: String(rawData.level || "beginner").trim(),
-      durationText: String(rawData.durationText || "").trim(),
-      maxStudents: toNumber(rawData.maxStudents, 0),
-      requirements: normalizeStringArray(rawData.requirements),
-      objectives: normalizeStringArray(rawData.objectives),
-      allowEnrollment: toBoolean(rawData.allowEnrollment, true),
-      hasCertificate: toBoolean(rawData.hasCertificate, false),
-      featured: toBoolean(rawData.featured, false),
-      curriculum: normalizeCurriculum(rawData.curriculum),
-    };
-
-    const validationError = await validateCoursePayload(payload);
-
-    if (validationError) {
-      return res.status(400).json({
-        success: false,
-        message: validationError,
-      });
-    }
-
-    const updated = await prisma.course.update({
-      where: { id },
-      data: payload,
-    });
-
-    return res.json({
-      success: true,
-      message: "อัปเดตคอร์สสำเร็จ",
-      data: {
-        _id: updated.id,
-        id: updated.id,
-        ...updated,
-      },
-    });
-  } catch (error) {
-    console.error("updateAdminCourse error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "เกิดข้อผิดพลาดในการอัปเดตคอร์ส",
-      error: error.message,
-    });
-  }
-};
-
-export const deleteAdminCourse = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const existing = await prisma.course.findUnique({
-      where: { id },
-    });
-
-    if (!existing) {
-      return res.status(404).json({
-        success: false,
-        message: "ไม่พบคอร์สนี้",
-      });
-    }
-
-    let enrollCount = 0;
-
-    try {
-      enrollCount = await prisma.userCourse.count({
-        where: { courseId: id },
-      });
-    } catch (e) {
-      enrollCount = 0;
-    }
-
-    if (enrollCount > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "ไม่สามารถลบคอร์สนี้ได้ เพราะมีนักเรียนลงทะเบียนแล้ว",
-      });
-    }
-
-    await prisma.course.delete({
-      where: { id },
-    });
-
-    return res.json({
-      success: true,
-      message: "ลบคอร์สสำเร็จ",
-    });
-  } catch (error) {
-    console.error("deleteAdminCourse error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "เกิดข้อผิดพลาดในการลบคอร์ส",
-      error: error.message,
-    });
-  }
-};
-
 export const approveCourse = async (req, res) => {
   try {
     const { id } = req.params;
     const course = await prisma.course.findUnique({ where: { id } });
-    
+
     if (!course) {
-      return res.status(404).json({ success: false, message: "course not found - ไม่พบคอร์สที่ต้องการอนุมัติ" });
+      return res.status(404).json({
+        success: false,
+        message: "course not found - ไม่พบคอร์สที่ต้องการอนุมัติ",
+      });
     }
+
     if ((course.status || "").toLowerCase() === "published") {
-      return res.status(400).json({ success: false, message: "course already approved - คอร์สนี้เผยแพร่ไปแล้ว" });
+      return res.status(400).json({
+        success: false,
+        message: "course already approved - คอร์สนี้เผยแพร่ไปแล้ว",
+      });
     }
-    
+
     const curriculum = Array.isArray(course.curriculum) ? course.curriculum : [];
-    const totalSessions = curriculum.reduce((acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0), 0);
-    
+    const totalSessions = curriculum.reduce(
+      (acc, sec) => acc + (Array.isArray(sec.lessons) ? sec.lessons.length : 0),
+      0
+    );
+
     if (curriculum.length === 0 && totalSessions === 0) {
-      return res.status(400).json({ success: false, message: "course has no sessions - ไม่สามารถอนุมัติได้ คอร์สต้องมีเนื้อหาอย่างน้อย 1 รายการ" });
+      return res.status(400).json({
+        success: false,
+        message: "course has no sessions - ไม่สามารถอนุมัติได้ คอร์สต้องมีเนื้อหาอย่างน้อย 1 รายการ",
+      });
     }
 
     const updated = await prisma.course.update({
       where: { id },
-      data: { status: "published" }
+      data: { status: "published" },
     });
 
-    return res.json({ success: true, message: "อนุมัติคอร์สสำเร็จ", data: updated });
+    return res.json({
+      success: true,
+      message: "อนุมัติคอร์สสำเร็จ",
+      data: updated,
+    });
   } catch (error) {
-    return res.status(500).json({ success: false, message: "เกิดข้อผิดพลาดในการอนุมัติคอร์ส", error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการอนุมัติคอร์ส",
+      error: error.message,
+    });
   }
 };
 
@@ -666,17 +808,29 @@ export const rejectCourse = async (req, res) => {
   try {
     const { id } = req.params;
     const course = await prisma.course.findUnique({ where: { id } });
+
     if (!course) {
-      return res.status(404).json({ success: false, message: "course not found - ไม่พบคอร์สที่ต้องการปฏิเสธ" });
+      return res.status(404).json({
+        success: false,
+        message: "course not found - ไม่พบคอร์สที่ต้องการปฏิเสธ",
+      });
     }
-    
+
     const updated = await prisma.course.update({
       where: { id },
-      data: { status: "rejected" }
+      data: { status: "rejected" },
     });
 
-    return res.json({ success: true, message: "ปฏิเสธคอร์สสำเร็จ", data: updated });
+    return res.json({
+      success: true,
+      message: "ปฏิเสธคอร์สสำเร็จ",
+      data: updated,
+    });
   } catch (error) {
-    return res.status(500).json({ success: false, message: "เกิดข้อผิดพลาดในการปฏิเสธคอร์ส", error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการปฏิเสธคอร์ส",
+      error: error.message,
+    });
   }
-};
+};
