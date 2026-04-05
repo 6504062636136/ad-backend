@@ -20,6 +20,8 @@ router.get("/users/pending", getPendingTeachers);
 router.get("/teachers/pending", getPendingTeachers);
 
 router.patch("/users/:id/approve", approveTeacher);
+// Backward/alternative path used by some clients
+router.patch("/users/:id/approval", approveTeacher);
 router.patch("/users/:id/reject", rejectTeacher);
 
 export default router;

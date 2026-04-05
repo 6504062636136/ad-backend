@@ -118,6 +118,11 @@ export const getAdminUsers = async (req, res) => {
         phone: u?.phone || "",
         createdAt: u?.createdAt?.$date || u?.createdAt || null,
         updatedAt: u?.updatedAt?.$date || u?.updatedAt || null,
+        degreeCertificateUrl: u?.degreeCertificateUrl || "",
+teachingLicenseUrl: u?.teachingLicenseUrl || "",
+transcriptUrl: u?.transcriptUrl || "",
+photoUrl: u?.photoUrl || "",
+subject: u?.subject || "",
       }));
 
       if (role && role !== "all") {
@@ -166,6 +171,86 @@ export const getAdminUsers = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "เกิดข้อผิดพลาดในการดึงรายการผู้ใช้",
+      error: error.message,
+    });
+  }
+};
+export const getAdminUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let user = null;
+
+    try {
+      user = await prisma.user.findUnique({
+        where: { id },
+      });
+    } catch (error) {
+      console.error("prisma.user.findUnique error in getAdminUserById:", error);
+    }
+
+    if (!user) {
+      const rawUsers = await prisma.user.findRaw({
+        filter: {},
+      });
+
+      const rawUser = (rawUsers || []).find((u) => {
+        const rawId = u?._id?.$oid || String(u?._id || "");
+        return rawId === id;
+      });
+
+      if (!rawUser) {
+        return res.status(404).json({
+          success: false,
+          message: "ไม่พบข้อมูลผู้ใช้",
+        });
+      }
+
+      user = {
+        id: rawUser?._id?.$oid || String(rawUser?._id || ""),
+        _id: rawUser?._id?.$oid || String(rawUser?._id || ""),
+        firstName: rawUser?.firstName || "",
+        lastName: rawUser?.lastName || "",
+        name:
+          rawUser?.name ||
+          `${rawUser?.firstName || ""} ${rawUser?.lastName || ""}`.trim(),
+        email: rawUser?.email || "",
+        phone: rawUser?.phone || "",
+        address: rawUser?.address || "",
+        dateOfBirth: rawUser?.dateOfBirth || "",
+        placeOfBirth: rawUser?.placeOfBirth || "",
+        role: rawUser?.role || "",
+        status: rawUser?.status || "",
+        subject: rawUser?.subject || "",
+        degree: rawUser?.degree || "",
+        university: rawUser?.university || "",
+        startEndDate: rawUser?.startEndDate || "",
+        city: rawUser?.city || "",
+        photoUrl: rawUser?.photoUrl || "",
+        degreeCertificateUrl: rawUser?.degreeCertificateUrl || "",
+        teachingLicenseUrl: rawUser?.teachingLicenseUrl || "",
+        transcriptUrl: rawUser?.transcriptUrl || "",
+        createdAt: rawUser?.createdAt?.$date || rawUser?.createdAt || null,
+        updatedAt: rawUser?.updatedAt?.$date || rawUser?.updatedAt || null,
+      };
+    }
+
+    return res.json({
+      success: true,
+      message: "ดึงรายละเอียดผู้ใช้สำเร็จ",
+      data: {
+        ...user,
+        name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+        degreeCertificateUrl: user.degreeCertificateUrl || "",
+        teachingLicenseUrl: user.teachingLicenseUrl || "",
+        transcriptUrl: user.transcriptUrl || "",
+      },
+    });
+  } catch (error) {
+    console.error("getAdminUserById error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึงรายละเอียดผู้ใช้",
       error: error.message,
     });
   }
