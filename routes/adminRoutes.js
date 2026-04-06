@@ -6,6 +6,7 @@ import {
   approveTeacher,
   rejectTeacher,
 } from "../controllers/adminController.js";
+import { getAdminSessions } from "../controllers/adminSessionController.js";
 import { requireAdmin } from "../middlewares/adminAuthMiddleware.js";
 
 const router = express.Router();
@@ -18,6 +19,8 @@ router.get("/dashboard/summary", getDashboardStats);
 router.get("/users", getAdminUsers);
 router.get("/users/pending", getPendingTeachers);
 router.get("/teachers/pending", getPendingTeachers);
+router.get("/session", getAdminSessions);
+router.get("/sessions", getAdminSessions);
 
 router.patch("/users/:id/approve", approveTeacher);
 // Backward/alternative path used by some clients

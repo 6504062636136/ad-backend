@@ -6,6 +6,7 @@ import pkg from "@prisma/client";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import admin from "./config/firebaseAdmin.js";
 
@@ -643,6 +644,399 @@ app.put(
 );
 
 app.use("/api/admin/courses", adminCourseRoutes);
+const normalizeCourseId = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  return String(value).trim();
+};
+
+const mapSessionDoc = (doc) => {
+  if (!doc) return null;
+  return {
+    ...doc,
+    _id: doc?._id?.$oid || String(doc?._id || ""),
+    id: doc?.id || doc?._id?.$oid || String(doc?._id || ""),
+  };
+};
+
+app.get("/api/admin/session", requireAdmin, async (req, res) => {
+  try {
+    const courseId = normalizeCourseId(req.query?.courseId || "");
+
+    if (!courseId) {
+      return res.json([]);
+    }
+
+    const filters = [{ courseId }];
+
+    if (/^[a-fA-F0-9]{24}$/.test(courseId)) {
+      filters.push({ courseId: { $oid: courseId } });
+    }
+
+    const result = await prisma.$runCommandRaw({
+      find: "sessions",
+      filter: { $or: filters },
+    });
+
+    const docs = result?.cursor?.firstBatch || [];
+
+    // 🔥 ดึง teacherId ทั้งหมด
+    const teacherIds = [
+      ...new Set(
+        docs
+          .map((s) => s?.teacherId?.$oid || s?.teacherId || "")
+          .filter(Boolean)
+          .map(String)
+      ),
+    ];
+
+    // 🔥 ไป query user
+    const teachers = teacherIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: teacherIds } },
+          select: {
+            id: true,
+            name: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
+        })
+      : [];
+
+    const teacherMap = new Map(
+      teachers.map((t) => [
+        t.id,
+        t.name ||
+          `${t.firstName || ""} ${t.lastName || ""}`.trim() ||
+          t.email ||
+          "-",
+      ])
+    );
+
+    // 🔥 map session
+    const sessions = docs.map((s) => {
+      const instructorId = String(
+        s?.teacherId?.$oid || s?.teacherId || ""
+      );
+
+      return {
+        _id: s?._id?.$oid || String(s?._id || ""),
+        id: s?.id || s?._id?.$oid || String(s?._id || ""),
+        startDate: s?.date || "",
+        endDate: s?.date || "",
+        startTime: s?.startTime || "",
+        endTime: s?.endTime || "",
+        meetingLink: s?.meetLink || "",
+        capacity: s?.maxSeats || "",
+        instructorId,
+        instructorName: teacherMap.get(instructorId) || "-", // 🔥 FIX ตรงนี้
+        status: s?.status || "open",
+        bookedSeats: s?.bookedSeats || 0,
+      };
+    });
+
+    return res.json(sessions);
+  } catch (error) {
+    console.error("GET /api/admin/session error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "failed to load sessions",
+      error: error.message,
+    });
+  }
+});
+
+app.post("/api/admin/session", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const courseId = normalizeCourseId(
+      body.courseId || body.course_id || body.course || ""
+    );
+
+    if (!courseId) {
+      return res.status(400).json({
+        success: false,
+        message: "missing courseId",
+      });
+    }
+
+    const id = String(body.id || "").trim() || crypto.randomUUID();
+    const now = new Date();
+
+    await prisma.$runCommandRaw({
+      insert: "sessions",
+      documents: [
+        {
+          ...body,
+          id,
+          courseId,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+
+    const found = await prisma.$runCommandRaw({
+      find: "sessions",
+      filter: { id },
+      limit: 1,
+    });
+
+    const doc = found?.cursor?.firstBatch?.[0] || null;
+
+    return res.json({
+      success: true,
+      message: "session saved",
+      data: doc ? mapSessionDoc(doc) : { id, courseId },
+    });
+  } catch (error) {
+    console.error("POST /api/admin/session error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "failed to save session",
+      error: error.message,
+    });
+  }
+});
+
+app.put("/api/admin/session/:sessionId", requireAdmin, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const body = req.body || {};
+    const courseId = normalizeCourseId(
+      body.courseId || body.course_id || body.course || ""
+    );
+    const now = new Date();
+
+    const updateDoc = {
+      ...body,
+      updatedAt: now,
+    };
+
+    if (courseId) {
+      updateDoc.courseId = courseId;
+    }
+
+    const byId = await prisma.$runCommandRaw({
+      update: "sessions",
+      updates: [
+        {
+          q: { id: sessionId },
+          u: { $set: updateDoc },
+          upsert: false,
+          multi: false,
+        },
+      ],
+    });
+
+    const matchedById = Number(byId?.n || byId?.nMatched || 0);
+
+    if (!matchedById && /^[a-fA-F0-9]{24}$/.test(sessionId)) {
+      const byObjectId = await prisma.$runCommandRaw({
+        update: "sessions",
+        updates: [
+          {
+            q: { _id: { $oid: sessionId } },
+            u: { $set: updateDoc },
+            upsert: false,
+            multi: false,
+          },
+        ],
+      });
+
+      const matchedByObjectId = Number(
+        byObjectId?.n || byObjectId?.nMatched || 0
+      );
+
+      if (!matchedByObjectId) {
+        return res.status(404).json({
+          success: false,
+          message: "session not found",
+        });
+      }
+
+      const found = await prisma.$runCommandRaw({
+        find: "sessions",
+        filter: { _id: { $oid: sessionId } },
+        limit: 1,
+      });
+
+      const doc = found?.cursor?.firstBatch?.[0] || null;
+
+      return res.json({
+        success: true,
+        message: "session updated",
+        data: doc ? mapSessionDoc(doc) : null,
+      });
+    }
+
+    if (!matchedById) {
+      return res.status(404).json({
+        success: false,
+        message: "session not found",
+      });
+    }
+
+    const found = await prisma.$runCommandRaw({
+      find: "sessions",
+      filter: { id: sessionId },
+      limit: 1,
+    });
+
+    const doc = found?.cursor?.firstBatch?.[0] || null;
+
+    return res.json({
+      success: true,
+      message: "session updated",
+      data: doc ? mapSessionDoc(doc) : null,
+    });
+  } catch (error) {
+    console.error("PUT /api/admin/session/:sessionId error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "failed to update session",
+      error: error.message,
+    });
+  }
+});
+
+app.delete("/api/admin/session/:sessionId", requireAdmin, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const byId = await prisma.$runCommandRaw({
+      delete: "sessions",
+      deletes: [
+        {
+          q: { id: sessionId },
+          limit: 1,
+        },
+      ],
+    });
+
+    const deletedById = Number(byId?.n || byId?.deletedCount || 0);
+
+    if (!deletedById && /^[a-fA-F0-9]{24}$/.test(sessionId)) {
+      const byObjectId = await prisma.$runCommandRaw({
+        delete: "sessions",
+        deletes: [
+          {
+            q: { _id: { $oid: sessionId } },
+            limit: 1,
+          },
+        ],
+      });
+
+      const deletedByObjectId = Number(
+        byObjectId?.n || byObjectId?.deletedCount || 0
+      );
+
+      if (!deletedByObjectId) {
+        return res.status(404).json({
+          success: false,
+          message: "session not found",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "session deleted",
+      });
+    }
+
+    if (!deletedById) {
+      return res.status(404).json({
+        success: false,
+        message: "session not found",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "session deleted",
+    });
+  } catch (error) {
+    console.error("DELETE /api/admin/session/:sessionId error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "failed to delete session",
+      error: error.message,
+    });
+  }
+});
+
+app.delete("/api/admin/session", requireAdmin, async (req, res) => {
+  try {
+    const sessionId = String(req.body?.id || "").trim();
+
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        message: "missing session id",
+      });
+    }
+
+    const byId = await prisma.$runCommandRaw({
+      delete: "sessions",
+      deletes: [
+        {
+          q: { id: sessionId },
+          limit: 1,
+        },
+      ],
+    });
+
+    const deletedById = Number(byId?.n || byId?.deletedCount || 0);
+
+    if (!deletedById && /^[a-fA-F0-9]{24}$/.test(sessionId)) {
+      const byObjectId = await prisma.$runCommandRaw({
+        delete: "sessions",
+        deletes: [
+          {
+            q: { _id: { $oid: sessionId } },
+            limit: 1,
+          },
+        ],
+      });
+
+      const deletedByObjectId = Number(
+        byObjectId?.n || byObjectId?.deletedCount || 0
+      );
+
+      if (!deletedByObjectId) {
+        return res.status(404).json({
+          success: false,
+          message: "session not found",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "session deleted",
+      });
+    }
+
+    if (!deletedById) {
+      return res.status(404).json({
+        success: false,
+        message: "session not found",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "session deleted",
+    });
+  } catch (error) {
+    console.error("DELETE /api/admin/session error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "failed to delete session",
+      error: error.message,
+    });
+  }
+});
 
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {

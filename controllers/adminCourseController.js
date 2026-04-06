@@ -548,49 +548,200 @@ export const updateAdminCourse = async (req, res) => {
 
     const rawData = parseRequestData(req);
 
-    const payload = {
-      title: String(rawData.title || "").trim(),
-      shortDescription: String(rawData.shortDescription || "").trim(),
-      description: String(rawData.description || "").trim(),
-      category: String(rawData.category || "").trim(),
-      instructorId: String(rawData.instructorId || "").trim(),
-      thumbnailUrl: req.file?.filename
-        ? `/uploads/courses/${req.file.filename}`
-        : String(rawData.thumbnailUrl || existing.thumbnailUrl || "").trim(),
-      price: toNumber(rawData.price, 0),
-      discountPrice: toNumber(rawData.discountPrice, 0),
-      isFree: toBoolean(rawData.isFree, false),
-      status: String(rawData.status || existing.status || "draft").trim(),
-      visibility: String(rawData.visibility || existing.visibility || "private").trim(),
-      level: String(rawData.level || existing.level || "beginner").trim(),
-      durationText: String(rawData.durationText || "").trim(),
-      startDate: String(rawData.startDate || "").trim(),
-      endDate: String(rawData.endDate || "").trim(),
-      startTime: String(rawData.startTime || "").trim(),
-      endTime: String(rawData.endTime || "").trim(),
-      maxStudents: toNumber(rawData.maxStudents, 0),
-      requirements: normalizeStringArray(rawData.requirements),
-      objectives: normalizeStringArray(rawData.objectives),
-      allowEnrollment: toBoolean(rawData.allowEnrollment, true),
-      hasCertificate: toBoolean(rawData.hasCertificate, false),
-      featured: toBoolean(rawData.featured, false),
-      curriculum: normalizeCurriculum(rawData.curriculum),
-      sessions: rawData.sessions || [],
+    const sessionsRequested = Object.prototype.hasOwnProperty.call(rawData || {}, "sessions");
+
+    const sessions = sessionsRequested
+      ? Array.isArray(rawData.sessions)
+        ? rawData.sessions
+        : []
+      : null;
+
+    const isPending = String(existing.status || "").trim().toLowerCase() === "pending";
+
+    const courseIdFilter =
+      typeof id === "string" && /^[a-fA-F0-9]{24}$/.test(id)
+        ? { $or: [{ courseId: id }, { courseId: { $oid: id } }] }
+        : { courseId: id };
+
+    let courseUpdate = {};
+
+    if ("title" in rawData) courseUpdate.title = String(rawData.title || "").trim();
+    if ("shortDescription" in rawData) {
+      courseUpdate.shortDescription = String(rawData.shortDescription || "").trim();
+    }
+    if ("description" in rawData) {
+      courseUpdate.description = String(rawData.description || "").trim();
+    }
+    if ("category" in rawData) {
+      courseUpdate.category = String(rawData.category || "").trim();
+    }
+    if ("instructorId" in rawData) {
+      courseUpdate.instructorId = String(rawData.instructorId || "").trim();
+    }
+
+    if (req.file?.filename) {
+      courseUpdate.thumbnailUrl = `/uploads/courses/${req.file.filename}`;
+    } else if ("thumbnailUrl" in rawData) {
+      courseUpdate.thumbnailUrl = String(rawData.thumbnailUrl || "").trim();
+    }
+
+    if ("price" in rawData) courseUpdate.price = toNumber(rawData.price, existing.price || 0);
+    if ("discountPrice" in rawData) {
+      courseUpdate.discountPrice = toNumber(rawData.discountPrice, existing.discountPrice || 0);
+    }
+    if ("isFree" in rawData) {
+      courseUpdate.isFree = toBoolean(
+        rawData.isFree,
+        typeof existing.isFree === "boolean" ? existing.isFree : false
+      );
+    }
+
+    if ("status" in rawData) courseUpdate.status = String(rawData.status || "").trim();
+    if ("visibility" in rawData) {
+      courseUpdate.visibility = String(rawData.visibility || "").trim();
+    }
+    if ("level" in rawData) courseUpdate.level = String(rawData.level || "").trim();
+    if ("durationText" in rawData) {
+      courseUpdate.durationText = String(rawData.durationText || "").trim();
+    }
+    if ("startDate" in rawData) courseUpdate.startDate = String(rawData.startDate || "").trim();
+    if ("endDate" in rawData) courseUpdate.endDate = String(rawData.endDate || "").trim();
+    if ("startTime" in rawData) courseUpdate.startTime = String(rawData.startTime || "").trim();
+    if ("endTime" in rawData) courseUpdate.endTime = String(rawData.endTime || "").trim();
+
+    if ("maxStudents" in rawData) {
+      courseUpdate.maxStudents = toNumber(rawData.maxStudents, existing.maxStudents || 0);
+    }
+    if ("requirements" in rawData) {
+      courseUpdate.requirements = normalizeStringArray(rawData.requirements);
+    }
+    if ("objectives" in rawData) {
+      courseUpdate.objectives = normalizeStringArray(rawData.objectives);
+    }
+    if ("allowEnrollment" in rawData) {
+      courseUpdate.allowEnrollment = toBoolean(
+        rawData.allowEnrollment,
+        typeof existing.allowEnrollment === "boolean" ? existing.allowEnrollment : true
+      );
+    }
+    if ("hasCertificate" in rawData) {
+      courseUpdate.hasCertificate = toBoolean(
+        rawData.hasCertificate,
+        typeof existing.hasCertificate === "boolean" ? existing.hasCertificate : false
+      );
+    }
+    if ("featured" in rawData) {
+      courseUpdate.featured = toBoolean(
+        rawData.featured,
+        typeof existing.featured === "boolean" ? existing.featured : false
+      );
+    }
+    if ("curriculum" in rawData) {
+      courseUpdate.curriculum = normalizeCurriculum(rawData.curriculum);
+    }
+
+    const hasCourseUpdates = Object.keys(courseUpdate).length > 0;
+
+    const upsertSessions = async () => {
+      if (!sessionsRequested) return;
+
+      const now = new Date();
+
+      await prisma.$runCommandRaw({
+        delete: "sessions",
+        deletes: [{ q: courseIdFilter, limit: 0 }],
+      });
+
+      if (sessions.length === 0) return;
+
+      await prisma.$runCommandRaw({
+        insert: "sessions",
+        documents: sessions.map((s) => ({
+          ...s,
+          courseId: id,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      });
     };
 
-    const validationError = await validateCoursePayload(payload);
+    if (isPending && hasCourseUpdates) {
+      if (sessionsRequested) {
+        await upsertSessions();
+        return res.json({
+          success: true,
+          message: "เธญเธฑเธเน€เธ”เธ•เธเธญเธฃเนเธชเธชเธณเน€เธฃเนเธ",
+          data: {
+            _id: existing.id,
+            id: existing.id,
+            ...existing,
+          },
+        });
+      }
 
-    if (validationError) {
       return res.status(400).json({
         success: false,
-        message: validationError,
+        message: "คอร์สสถานะ pending ไม่สามารถแก้ไขได้",
       });
     }
 
-    const updated = await prisma.course.update({
-      where: { id },
-      data: payload,
-    });
+    if (hasCourseUpdates) {
+      const payloadForValidation = {
+        title:
+          "title" in courseUpdate ? courseUpdate.title : String(existing.title || "").trim(),
+        category:
+          "category" in courseUpdate
+            ? courseUpdate.category
+            : String(existing.category || "").trim(),
+        instructorId:
+          "instructorId" in courseUpdate
+            ? courseUpdate.instructorId
+            : String(existing.instructorId || "").trim(),
+        isFree:
+          "isFree" in courseUpdate
+            ? courseUpdate.isFree
+            : typeof existing.isFree === "boolean"
+              ? existing.isFree
+              : false,
+        price: "price" in courseUpdate ? courseUpdate.price : existing.price || 0,
+        discountPrice:
+          "discountPrice" in courseUpdate
+            ? courseUpdate.discountPrice
+            : existing.discountPrice || 0,
+        startDate:
+          "startDate" in courseUpdate
+            ? courseUpdate.startDate
+            : String(existing.startDate || "").trim(),
+        endDate:
+          "endDate" in courseUpdate
+            ? courseUpdate.endDate
+            : String(existing.endDate || "").trim(),
+      };
+
+      const validationError = await validateCoursePayload(payloadForValidation);
+
+      if (validationError) {
+        if (sessionsRequested) {
+          await upsertSessions();
+          courseUpdate = {};
+        } else {
+          return res.status(400).json({
+            success: false,
+            message: validationError,
+          });
+        }
+      }
+    }
+
+    await upsertSessions();
+
+    const updated =
+      Object.keys(courseUpdate).length > 0
+        ? await prisma.course.update({
+            where: { id },
+            data: courseUpdate,
+          })
+        : existing;
 
     return res.json({
       success: true,
@@ -606,6 +757,104 @@ export const updateAdminCourse = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "เกิดข้อผิดพลาดในการอัปเดตคอร์ส",
+      error: error.message,
+    });
+  }
+};
+
+export const getAdminCourseSessions = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const courseIdFilter =
+      typeof courseId === "string" && /^[a-fA-F0-9]{24}$/.test(courseId)
+        ? { $or: [{ courseId }, { courseId: { $oid: courseId } }] }
+        : { courseId };
+
+    const result = await prisma.$runCommandRaw({
+      find: "sessions",
+      filter: courseIdFilter,
+    });
+
+    const docs = Array.isArray(result?.cursor?.firstBatch)
+      ? result.cursor.firstBatch
+      : [];
+
+    if (docs.length > 0) {
+      const sessions = docs.map((s) => ({
+        ...s,
+        _id: s?._id?.$oid || String(s?._id || ""),
+        id: s?._id?.$oid || String(s?._id || ""),
+      }));
+      return res.json(sessions);
+    }
+
+    const legacy = await prisma.$runCommandRaw({
+      find: "course_sessions",
+      filter: { courseId },
+      limit: 1,
+    });
+
+    const legacyDoc = legacy?.cursor?.firstBatch?.[0] || null;
+    const sessions = Array.isArray(legacyDoc?.sessions) ? legacyDoc.sessions : [];
+
+    return res.json(sessions);
+  } catch (error) {
+    console.error("getAdminCourseSessions error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึง sessions ของคอร์ส",
+      error: error.message,
+    });
+  }
+};
+
+export const getAdminCourseSessionsByQuery = async (req, res) => {
+  try {
+    const courseId = String(req.query?.courseId || "").trim();
+
+    if (!courseId) {
+      return res.json([]);
+    }
+
+    const courseIdFilter =
+      typeof courseId === "string" && /^[a-fA-F0-9]{24}$/.test(courseId)
+        ? { $or: [{ courseId }, { courseId: { $oid: courseId } }] }
+        : { courseId };
+
+    const result = await prisma.$runCommandRaw({
+      find: "sessions",
+      filter: courseIdFilter,
+    });
+
+    const docs = Array.isArray(result?.cursor?.firstBatch)
+      ? result.cursor.firstBatch
+      : [];
+
+    if (docs.length > 0) {
+      const sessions = docs.map((s) => ({
+        ...s,
+        _id: s?._id?.$oid || String(s?._id || ""),
+        id: s?._id?.$oid || String(s?._id || ""),
+      }));
+      return res.json(sessions);
+    }
+
+    const legacy = await prisma.$runCommandRaw({
+      find: "course_sessions",
+      filter: { courseId },
+      limit: 1,
+    });
+
+    const legacyDoc = legacy?.cursor?.firstBatch?.[0] || null;
+    const sessions = Array.isArray(legacyDoc?.sessions) ? legacyDoc.sessions : [];
+
+    return res.json(sessions);
+  } catch (error) {
+    console.error("getAdminCourseSessionsByQuery error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึง sessions ของคอร์ส",
       error: error.message,
     });
   }
@@ -830,6 +1079,44 @@ export const rejectCourse = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "เกิดข้อผิดพลาดในการปฏิเสธคอร์ส",
+      error: error.message,
+    });
+  }
+};
+
+export const archiveCourse = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const course = await prisma.course.findUnique({ where: { id } });
+
+    if (!course) {
+      return res.status(404).json({
+        success: false,
+        message: "course not found - ไม่พบคอร์สที่ต้องการปิด",
+      });
+    }
+
+    if (String(course.status || "").trim().toLowerCase() !== "published") {
+      return res.status(400).json({
+        success: false,
+        message: "course is not published - คอร์สต้องอยู่สถานะ published เท่านั้นจึงปิดได้",
+      });
+    }
+
+    const updated = await prisma.course.update({
+      where: { id },
+      data: { status: "archived" },
+    });
+
+    return res.json({
+      success: true,
+      message: "ปิดคอร์สสำเร็จ",
+      data: updated,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการปิดคอร์ส",
       error: error.message,
     });
   }
