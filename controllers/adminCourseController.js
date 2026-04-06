@@ -1,4 +1,8 @@
 import pkg from "@prisma/client";
+import {
+  deleteFirebaseFileByUrl,
+  uploadBufferToFirebaseStorage,
+} from "../services/firebaseStorageService.js";
 
 const { PrismaClient } = pkg;
 const prisma = new PrismaClient();
@@ -59,11 +63,6 @@ const parseRequestData = (req) => {
     return JSON.parse(req.body.data);
   }
   return req.body || {};
-};
-
-const getThumbnailUrl = (req) => {
-  if (!req.file?.filename) return "";
-  return `/uploads/courses/${req.file.filename}`;
 };
 
 const formatInstructor = (teacher) => {
@@ -466,13 +465,24 @@ export const createAdminCourse = async (req, res) => {
     const rawData = parseRequestData(req);
     console.log("createAdminCourse rawData:", rawData);
 
+    let uploadedThumbnailUrl = "";
+    if (req.file?.buffer) {
+      const uploaded = await uploadBufferToFirebaseStorage({
+        buffer: req.file.buffer,
+        destinationFolder: "courses/thumbnails",
+        mimetype: req.file.mimetype,
+        originalFilename: req.file.originalname,
+      });
+      uploadedThumbnailUrl = uploaded.url;
+    }
+
     const payload = {
       title: String(rawData.title || "").trim(),
       shortDescription: String(rawData.shortDescription || "").trim(),
       description: String(rawData.description || "").trim(),
       category: String(rawData.category || "").trim(),
       instructorId: String(rawData.instructorId || "").trim(),
-      thumbnailUrl: getThumbnailUrl(req) || String(rawData.thumbnailUrl || "").trim(),
+      thumbnailUrl: uploadedThumbnailUrl || String(rawData.thumbnailUrl || "").trim(),
       price: toNumber(rawData.price, 0),
       discountPrice: toNumber(rawData.discountPrice, 0),
       isFree: toBoolean(rawData.isFree, false),
@@ -579,8 +589,22 @@ export const updateAdminCourse = async (req, res) => {
       courseUpdate.instructorId = String(rawData.instructorId || "").trim();
     }
 
-    if (req.file?.filename) {
-      courseUpdate.thumbnailUrl = `/uploads/courses/${req.file.filename}`;
+    if (req.file?.buffer) {
+      const uploaded = await uploadBufferToFirebaseStorage({
+        buffer: req.file.buffer,
+        destinationFolder: "courses/thumbnails",
+        mimetype: req.file.mimetype,
+        originalFilename: req.file.originalname,
+      });
+      courseUpdate.thumbnailUrl = uploaded.url;
+
+      if (existing.thumbnailUrl) {
+        try {
+          await deleteFirebaseFileByUrl(existing.thumbnailUrl);
+        } catch (error) {
+          console.error("Failed to delete old course thumbnail:", error);
+        }
+      }
     } else if ("thumbnailUrl" in rawData) {
       courseUpdate.thumbnailUrl = String(rawData.thumbnailUrl || "").trim();
     }

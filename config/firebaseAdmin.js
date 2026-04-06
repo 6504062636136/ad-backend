@@ -1,4 +1,6 @@
 import admin from "firebase-admin";
+import "firebase-admin/auth";
+import "firebase-admin/storage";
 import fs from "fs";
 
 const serviceAccount = JSON.parse(
@@ -8,6 +10,7 @@ const serviceAccount = JSON.parse(
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
   });
 }
 

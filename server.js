@@ -9,6 +9,10 @@ import fs from "fs";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 import admin from "./config/firebaseAdmin.js";
+import {
+  deleteFirebaseFileByUrl,
+  uploadBufferToFirebaseStorage,
+} from "./services/firebaseStorageService.js";
 
 import adminCourseRoutes from "./routes/adminCourseRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
@@ -39,36 +43,18 @@ const safeDeleteFile = (fileUrl) => {
   }
 };
 
-const getUploadFolder = (role, fieldname) => {
-  if (role === "student") {
-    if (fieldname === "photo") {
-      return path.join(__dirname, "uploads", "students", "photos");
-    }
-    return path.join(__dirname, "uploads", "students", "documents");
+const safeDeleteStoredAsset = async (fileUrl) => {
+  if (!fileUrl) return;
+
+  // Local legacy uploads (/uploads/...) are still supported for old records.
+  safeDeleteFile(fileUrl);
+
+  // New uploads use Firebase Storage URLs.
+  try {
+    await deleteFirebaseFileByUrl(fileUrl);
+  } catch (error) {
+    console.error("Failed to delete Firebase file:", error);
   }
-
-  if (fieldname === "photo") {
-    return path.join(__dirname, "uploads", "teachers", "photos");
-  }
-
-  return path.join(__dirname, "uploads", "teachers", "documents");
-};
-
-const getFileUrlByRole = (role, fieldname, filename) => {
-  if (!filename) return null;
-
-  if (role === "student") {
-    if (fieldname === "photo") {
-      return `/uploads/students/photos/${filename}`;
-    }
-    return `/uploads/students/documents/${filename}`;
-  }
-
-  if (fieldname === "photo") {
-    return `/uploads/teachers/photos/${filename}`;
-  }
-
-  return `/uploads/teachers/documents/${filename}`;
 };
 
 ensureDir(path.join(__dirname, "uploads", "teachers", "photos"));
@@ -77,22 +63,7 @@ ensureDir(path.join(__dirname, "uploads", "students", "photos"));
 ensureDir(path.join(__dirname, "uploads", "students", "documents"));
 ensureDir(path.join(__dirname, "uploads", "courses"));
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const role = req.body.role || "teacher";
-    const folder = getUploadFolder(role, file.fieldname);
-    ensureDir(folder);
-    cb(null, folder);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const safeName = file.originalname
-      .replace(ext, "")
-      .replace(/[^a-zA-Z0-9-_]/g, "_");
-
-    cb(null, `${Date.now()}-${safeName}${ext}`);
-  },
-});
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
   const imageTypes = ["image/png", "image/jpeg", "image/jpg"];
@@ -276,6 +247,7 @@ app.post(
   ]),
   async (req, res) => {
     let firebaseUser = null;
+    let uploadedFileUrls = [];
 
     try {
       const {
@@ -313,6 +285,26 @@ app.post(
       const teachingLicenseFile = req.files?.teachingLicense?.[0];
       const transcriptFile = req.files?.transcript?.[0];
       const studentCardFile = req.files?.studentCard?.[0];
+
+      uploadedFileUrls = [];
+      const uploadUserFile = async (file, fieldname) => {
+        if (!file?.buffer) return null;
+
+        const destinationFolder =
+          fieldname === "photo"
+            ? `users/${normalizedRole}/photos`
+            : `users/${normalizedRole}/documents/${fieldname}`;
+
+        const uploaded = await uploadBufferToFirebaseStorage({
+          buffer: file.buffer,
+          destinationFolder,
+          mimetype: file.mimetype,
+          originalFilename: file.originalname,
+        });
+
+        uploadedFileUrls.push(uploaded.url);
+        return uploaded.url;
+      };
 
       if (!normalizedEmail) {
         return res.status(400).json({
@@ -359,6 +351,18 @@ app.post(
         disabled: normalizedStatus === "Inactive",
       });
 
+      const photoUrl = await uploadUserFile(photoFile, "photo");
+      const degreeCertificateUrl = await uploadUserFile(
+        degreeCertificateFile,
+        "degreeCertificate"
+      );
+      const teachingLicenseUrl = await uploadUserFile(
+        teachingLicenseFile,
+        "teachingLicense"
+      );
+      const transcriptUrl = await uploadUserFile(transcriptFile, "transcript");
+      const studentCardUrl = await uploadUserFile(studentCardFile, "studentCard");
+
       const user = await prisma.user.create({
         data: {
           firebaseUid: firebaseUser.uid,
@@ -389,37 +393,11 @@ app.post(
           parentName: parentName || null,
           parentPhone: parentPhone || null,
 
-          photoUrl: photoFile
-            ? getFileUrlByRole(normalizedRole, "photo", photoFile.filename)
-            : null,
-          degreeCertificateUrl: degreeCertificateFile
-            ? getFileUrlByRole(
-              normalizedRole,
-              "degreeCertificate",
-              degreeCertificateFile.filename
-            )
-            : null,
-          teachingLicenseUrl: teachingLicenseFile
-            ? getFileUrlByRole(
-              normalizedRole,
-              "teachingLicense",
-              teachingLicenseFile.filename
-            )
-            : null,
-          transcriptUrl: transcriptFile
-            ? getFileUrlByRole(
-              normalizedRole,
-              "transcript",
-              transcriptFile.filename
-            )
-            : null,
-          studentCardUrl: studentCardFile
-            ? getFileUrlByRole(
-              normalizedRole,
-              "studentCard",
-              studentCardFile.filename
-            )
-            : null,
+          photoUrl,
+          degreeCertificateUrl,
+          teachingLicenseUrl,
+          transcriptUrl,
+          studentCardUrl,
         },
       });
 
@@ -428,6 +406,12 @@ app.post(
       console.error("POST /api/admin/users error:", error);
       console.error("POST /api/admin/users message:", error?.message);
       console.error("POST /api/admin/users code:", error?.code);
+
+      if (uploadedFileUrls.length) {
+        await Promise.allSettled(
+          uploadedFileUrls.map((url) => deleteFirebaseFileByUrl(url))
+        );
+      }
 
       if (firebaseUser?.uid) {
         try {
@@ -478,11 +462,11 @@ app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
       return res.status(404).json({ error: "ไม่พบผู้ใช้ที่ต้องการลบ" });
     }
 
-    safeDeleteFile(existingUser.photoUrl);
-    safeDeleteFile(existingUser.degreeCertificateUrl);
-    safeDeleteFile(existingUser.teachingLicenseUrl);
-    safeDeleteFile(existingUser.transcriptUrl);
-    safeDeleteFile(existingUser.studentCardUrl);
+    await safeDeleteStoredAsset(existingUser.photoUrl);
+    await safeDeleteStoredAsset(existingUser.degreeCertificateUrl);
+    await safeDeleteStoredAsset(existingUser.teachingLicenseUrl);
+    await safeDeleteStoredAsset(existingUser.transcriptUrl);
+    await safeDeleteStoredAsset(existingUser.studentCardUrl);
 
     await prisma.user.delete({
       where: { id },
@@ -506,6 +490,7 @@ app.put(
     { name: "studentCard", maxCount: 1 },
   ]),
   async (req, res) => {
+    let newlyUploadedUrls = [];
     try {
       const { id } = req.params;
 
@@ -563,20 +548,53 @@ app.put(
       const transcriptFile = req.files?.transcript?.[0];
       const studentCardFile = req.files?.studentCard?.[0];
 
-      if (photoFile && existingUser.photoUrl) {
-        safeDeleteFile(existingUser.photoUrl);
+      newlyUploadedUrls = [];
+      const uploadUserFile = async (file, fieldname) => {
+        if (!file?.buffer) return null;
+
+        const destinationFolder =
+          fieldname === "photo"
+            ? `users/${normalizedRole}/photos`
+            : `users/${normalizedRole}/documents/${fieldname}`;
+
+        const uploaded = await uploadBufferToFirebaseStorage({
+          buffer: file.buffer,
+          destinationFolder,
+          mimetype: file.mimetype,
+          originalFilename: file.originalname,
+        });
+
+        newlyUploadedUrls.push(uploaded.url);
+        return uploaded.url;
+      };
+
+      const newPhotoUrl = photoFile ? await uploadUserFile(photoFile, "photo") : null;
+      const newDegreeCertificateUrl = degreeCertificateFile
+        ? await uploadUserFile(degreeCertificateFile, "degreeCertificate")
+        : null;
+      const newTeachingLicenseUrl = teachingLicenseFile
+        ? await uploadUserFile(teachingLicenseFile, "teachingLicense")
+        : null;
+      const newTranscriptUrl = transcriptFile
+        ? await uploadUserFile(transcriptFile, "transcript")
+        : null;
+      const newStudentCardUrl = studentCardFile
+        ? await uploadUserFile(studentCardFile, "studentCard")
+        : null;
+
+      const oldUrlsToDelete = [];
+      if (newPhotoUrl && existingUser.photoUrl) oldUrlsToDelete.push(existingUser.photoUrl);
+      if (newDegreeCertificateUrl && existingUser.degreeCertificateUrl) {
+        oldUrlsToDelete.push(existingUser.degreeCertificateUrl);
       }
-      if (degreeCertificateFile && existingUser.degreeCertificateUrl) {
-        safeDeleteFile(existingUser.degreeCertificateUrl);
+      if (newTeachingLicenseUrl && existingUser.teachingLicenseUrl) {
+        oldUrlsToDelete.push(existingUser.teachingLicenseUrl);
       }
-      if (teachingLicenseFile && existingUser.teachingLicenseUrl) {
-        safeDeleteFile(existingUser.teachingLicenseUrl);
+      if (newTranscriptUrl && existingUser.transcriptUrl) {
+        oldUrlsToDelete.push(existingUser.transcriptUrl);
       }
-      if (transcriptFile && existingUser.transcriptUrl) {
-        safeDeleteFile(existingUser.transcriptUrl);
-      }
-      if (studentCardFile && existingUser.studentCardUrl) {
-        safeDeleteFile(existingUser.studentCardUrl);
+      if (newStudentCardUrl && existingUser.studentCardUrl) {
+        oldUrlsToDelete.push(existingUser.studentCardUrl);
       }
 
       const updatedUser = await prisma.user.update({
@@ -609,35 +627,29 @@ app.put(
           parentName: parentName || null,
           parentPhone: parentPhone || null,
 
-          photoUrl: photoFile
-            ? getFileUrlByRole(normalizedRole, "photo", photoFile.filename)
-            : existingUser.photoUrl,
-          degreeCertificateUrl: degreeCertificateFile
-            ? getFileUrlByRole(
-              normalizedRole,
-              "degreeCertificate",
-              degreeCertificateFile.filename
-            )
-            : existingUser.degreeCertificateUrl,
-          teachingLicenseUrl: teachingLicenseFile
-            ? getFileUrlByRole(
-              normalizedRole,
-              "teachingLicense",
-              teachingLicenseFile.filename
-            )
-            : existingUser.teachingLicenseUrl,
-          transcriptUrl: transcriptFile
-            ? getFileUrlByRole(normalizedRole, "transcript", transcriptFile.filename)
-            : existingUser.transcriptUrl,
-          studentCardUrl: studentCardFile
-            ? getFileUrlByRole(normalizedRole, "studentCard", studentCardFile.filename)
-            : existingUser.studentCardUrl,
+          photoUrl: newPhotoUrl || existingUser.photoUrl,
+          degreeCertificateUrl:
+            newDegreeCertificateUrl || existingUser.degreeCertificateUrl,
+          teachingLicenseUrl: newTeachingLicenseUrl || existingUser.teachingLicenseUrl,
+          transcriptUrl: newTranscriptUrl || existingUser.transcriptUrl,
+          studentCardUrl: newStudentCardUrl || existingUser.studentCardUrl,
         },
       });
+
+      if (oldUrlsToDelete.length) {
+        await Promise.allSettled(oldUrlsToDelete.map((url) => safeDeleteStoredAsset(url)));
+      }
 
       res.json({ success: true, message: "อัปเดตผู้ใช้สำเร็จ", data: updatedUser });
     } catch (error) {
       console.error("PUT /api/admin/users/:id error:", error);
+
+      if (newlyUploadedUrls.length) {
+        await Promise.allSettled(
+          newlyUploadedUrls.map((url) => deleteFirebaseFileByUrl(url))
+        );
+      }
+
       res.status(500).json({ success: false, message: "เกิดข้อผิดพลาด", error: error.message });
     }
   }
